@@ -1,0 +1,196 @@
+#!/usr/bin/expect -f
+
+# Real-server smoke test for the interactive paths used by Modot Browser.
+# Credentials are read only from the process environment and terminal output is
+# suppressed so passwords, prompts, paths, and remote project names never leak
+# into CI or agent logs.
+
+log_user 0
+match_max 262144
+
+foreach name {TEST_IP TEST_PORT TEST_USERID TEST_PASSWD} {
+    if {![info exists env($name)] || $env($name) eq ""} {
+        puts stderr "missing_environment=$name"
+        exit 2
+    }
+}
+
+set knownHosts "/tmp/modot-browser-ssh-known-hosts"
+set scriptDirectory [file dirname [file normalize [info script]]]
+set askpass [file join $scriptDirectory "ssh_askpass.sh"]
+set sshArgs [list env \
+    "TERM=xterm-256color" \
+    "SSH_ASKPASS_REQUIRE=force" \
+    "SSH_ASKPASS=$askpass" \
+    ssh -tt \
+    -o "ConnectTimeout=12" \
+    -o "ConnectionAttempts=1" \
+    -o "PreferredAuthentications=keyboard-interactive,password" \
+    -o "KbdInteractiveAuthentication=yes" \
+    -o "PubkeyAuthentication=no" \
+    -o "StrictHostKeyChecking=accept-new" \
+    -o "UserKnownHostsFile=$knownHosts" \
+    -o "LogLevel=ERROR" \
+    -p $env(TEST_PORT) \
+    -- "$env(TEST_USERID)@$env(TEST_IP)"]
+
+proc wait_for_marker {marker {seconds 15}} {
+    global env timeout spawn_id
+    set timeout $seconds
+    expect {
+        -re {(?i)(password|passcode)[^:\r\n]*:[ ]*$} {
+            send -- "$env(TEST_PASSWD)\r"
+            exp_continue
+        }
+        -exact $marker { return 1 }
+        -re {(?i)(permission denied|authentication failed|connection (closed|refused)|no route to host)} {
+            return 0
+        }
+        timeout { return 0 }
+        eof { return 0 }
+    }
+}
+
+proc open_shell {rows columns} {
+    global sshArgs spawn_out spawn_id
+    spawn {*}$sshArgs
+    set slave $spawn_out(slave,name)
+    exec stty rows $rows columns $columns < $slave
+
+    # SSH_ASKPASS handles keyboard-interactive without consuming terminal input,
+    # so a command queued during login is delivered only after the shell opens.
+    after 700
+    send -- "printf '__MODOT_READY__\\n'\r"
+    if {![wait_for_marker "__MODOT_READY__" 15]} { return "" }
+    return $slave
+}
+
+proc query_size {label} {
+    global spawn_id
+    send -- "printf '__${label}__'; stty size | tr -d '\\r\\n'; printf '__END__\\n'\r"
+    set timeout 8
+    set pattern [format {__%s__([0-9]+) ([0-9]+)__END__} $label]
+    expect {
+        -re $pattern {
+            return [list $expect_out(1,string) $expect_out(2,string)]
+        }
+        timeout { return {} }
+        eof { return {} }
+    }
+}
+
+proc close_shell {} {
+    global spawn_id
+    catch { send -- "exit\r" }
+    set timeout 3
+    catch { expect eof }
+    catch { close }
+    catch { wait }
+}
+
+# Plain shell, initial PTY size, live resize, and Codex TUI/interrupt recovery.
+set plainSlave [open_shell 30 100]
+if {$plainSlave eq ""} {
+    puts "plain_shell=failed"
+    exit 1
+}
+puts "plain_shell=passed"
+
+set initialSize [query_size "PLAIN_SIZE_INITIAL"]
+set plainInitialOK [expr {$initialSize eq {30 100}}]
+puts "plain_initial_size=[expr {$plainInitialOK ? {passed} : {failed}}]"
+
+exec stty rows 42 columns 132 < $plainSlave
+after 800
+set resizedSize [query_size "PLAIN_SIZE_RESIZED"]
+set plainResizeOK [expr {$resizedSize eq {42 132}}]
+puts "plain_live_resize=[expr {$plainResizeOK ? {passed} : {failed}}]"
+
+send -- {if command -v codex >/dev/null 2>&1; then printf '__CODEX_PRESENT__yes__END__\n'; else printf '__CODEX_PRESENT__no__END__\n'; fi}
+send -- "\r"
+set timeout 8
+set codexPresent 0
+expect {
+    -re {__CODEX_PRESENT__(yes|no)__END__} {
+        set codexPresent [expr {$expect_out(1,string) eq "yes"}]
+    }
+    timeout {}
+    eof {}
+}
+puts "codex_available=[expr {$codexPresent ? {yes} : {no}}]"
+
+set codexRecovered 0
+set codexANSI 0
+if {$codexPresent} {
+    send -- "codex\r"
+    set timeout 6
+    expect {
+        -re {\x1b} { set codexANSI 1 }
+        timeout {}
+        eof {}
+    }
+    after 1000
+    send -- "\003"
+    after 800
+    send -- "\003"
+    after 800
+    send -- "printf '__CODEX_RECOVERED__\\n'\r"
+    set codexRecovered [wait_for_marker "__CODEX_RECOVERED__" 12]
+}
+puts "codex_tui_ansi=[expr {$codexANSI ? {passed} : {not_observed}}]"
+puts "codex_interrupt_recovery=[expr {$codexRecovered ? {passed} : {failed}}]"
+close_shell
+
+# App-equivalent tmux attach/create command plus initial and live PTY resize.
+set tmuxSession "modot_probe_[pid]"
+set tmuxSlave [open_shell 31 101]
+if {$tmuxSlave eq ""} {
+    puts "tmux_shell=failed"
+    exit 1
+}
+
+send -- "tmux -u new-session -A -s $tmuxSession\r"
+after 1300
+send -- {printf '__TMUX_ACTIVE__'; test -n "$TMUX" && printf yes || printf no; printf '__END__\n'}
+send -- "\r"
+set timeout 10
+set tmuxActive 0
+set tmuxObserved "timeout"
+expect {
+    -re {__TMUX_ACTIVE__(yes|no)__END__} {
+        set tmuxObserved $expect_out(1,string)
+        set tmuxActive [expr {$expect_out(1,string) eq "yes"}]
+    }
+    timeout {}
+    eof {}
+}
+puts "tmux_attach_create=[expr {$tmuxActive ? {passed} : {failed}}]"
+puts "tmux_environment=$tmuxObserved"
+
+set tmuxInitialSize [query_size "TMUX_SIZE_INITIAL"]
+set tmuxInitialOK [expr {$tmuxInitialSize eq {30 101}}]
+puts "tmux_initial_size=[expr {$tmuxInitialOK ? {passed} : {failed}}]"
+puts "tmux_initial_observed=[join $tmuxInitialSize x]"
+
+exec stty rows 43 columns 129 < $tmuxSlave
+after 900
+set tmuxResizedSize [query_size "TMUX_SIZE_RESIZED"]
+set tmuxResizeOK [expr {$tmuxResizedSize eq {42 129}}]
+puts "tmux_live_resize=[expr {$tmuxResizeOK ? {passed} : {failed}}]"
+puts "tmux_resized_observed=[join $tmuxResizedSize x]"
+
+# Detach using tmux's default prefix, then remove only our unique probe session.
+send -- "\002d"
+after 900
+send -- "tmux kill-session -t $tmuxSession >/dev/null 2>&1; printf '__TMUX_CLEAN__\\n'\r"
+set tmuxClean [wait_for_marker "__TMUX_CLEAN__" 8]
+puts "tmux_cleanup=[expr {$tmuxClean ? {passed} : {failed}}]"
+close_shell
+
+if {!$plainInitialOK || !$plainResizeOK || !$tmuxActive || !$tmuxInitialOK || !$tmuxResizeOK || !$tmuxClean} {
+    exit 1
+}
+if {$codexPresent && !$codexRecovered} {
+    exit 1
+}
+exit 0
