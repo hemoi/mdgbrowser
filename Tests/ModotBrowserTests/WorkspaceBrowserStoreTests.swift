@@ -124,7 +124,7 @@ final class WorkspaceBrowserStoreTests: XCTestCase {
         XCTAssertEqual(store.visibleOrderedTabs.filter { $0.stackID == stackID }.count, 1)
     }
 
-    func testSiteSettingsAndKoreanPageNotePersist() {
+    func testSiteSettingsPersist() {
         let (store, defaults) = makeStore()
         let key = "feature.snapshot"
         let persistentStore = WorkspaceBrowserStore(defaults: defaults, storageKey: key)
@@ -135,14 +135,245 @@ final class WorkspaceBrowserStoreTests: XCTestCase {
         settings.pageZoom = 1.3
         settings.blockerEnabled = false
         persistentStore.saveSiteSettings(settings)
-        persistentStore.saveCurrentPageNote("한글 메모와 中文 메모")
 
         let restored = WorkspaceBrowserStore(defaults: defaults, storageKey: key)
         let restoredSettings = restored.settings(for: URL(string: "https://example.com/docs")!)
         XCTAssertEqual(restoredSettings.contentMode, .desktop)
         XCTAssertEqual(restoredSettings.pageZoom, 1.3)
         XCTAssertFalse(restoredSettings.blockerEnabled)
-        XCTAssertEqual(restored.pageNotes.first?.text, "한글 메모와 中文 메모")
+
+        defaults.removeObject(forKey: key)
+        store.resetForTesting()
+    }
+
+    func testPlaceTabRightEnablesSplitKeepingCurrentPageLeft() {
+        let (store, _) = makeStore()
+        let firstID = store.selectedTabID(for: .primary)
+        let secondID = store.addTab()
+
+        store.placeTab(secondID, in: .secondary)
+
+        XCTAssertTrue(store.activeWorkspace.splitEnabled)
+        XCTAssertEqual(store.selectedTabID(for: .primary), firstID)
+        XCTAssertEqual(store.selectedTabID(for: .secondary), secondID)
+        XCTAssertEqual(store.activePane, .secondary)
+    }
+
+    func testPlaceTabLeftMovesCurrentPageRight() {
+        let (store, _) = makeStore()
+        let firstID = store.selectedTabID(for: .primary)
+        let secondID = store.addTab()
+
+        store.placeTab(secondID, in: .primary)
+
+        XCTAssertTrue(store.activeWorkspace.splitEnabled)
+        XCTAssertEqual(store.selectedTabID(for: .primary), secondID)
+        XCTAssertEqual(store.selectedTabID(for: .secondary), firstID)
+        XCTAssertEqual(store.activePane, .primary)
+    }
+
+    func testPlacingOnlyTabIntoSplitCreatesCompanion() {
+        let (store, _) = makeStore()
+        let onlyID = store.selectedTabID(for: .primary)
+
+        store.placeTab(onlyID, in: .secondary)
+
+        XCTAssertTrue(store.activeWorkspace.splitEnabled)
+        XCTAssertEqual(store.activeWorkspace.tabs.count, 2)
+        XCTAssertEqual(store.selectedTabID(for: .secondary), onlyID)
+        XCTAssertNotEqual(store.selectedTabID(for: .primary), onlyID)
+    }
+
+    func testTabRemembersPaneAcrossSplitToggle() {
+        let (store, _) = makeStore()
+        store.toggleSplit()
+        let rightID = store.selectedTabID(for: .secondary)
+
+        store.toggleSplit()
+        store.toggleSplit()
+
+        XCTAssertEqual(store.selectedTabID(for: .secondary), rightID)
+    }
+
+    func testTapOnVisibleTabFocusesItsPaneWithoutSwapping() {
+        let (store, _) = makeStore()
+        store.toggleSplit()
+        let leftID = store.selectedTabID(for: .primary)
+        let rightID = store.selectedTabID(for: .secondary)
+        XCTAssertEqual(store.activePane, .secondary)
+
+        store.handleTabTap(leftID)
+
+        XCTAssertEqual(store.activePane, .primary)
+        XCTAssertEqual(store.selectedTabID(for: .primary), leftID)
+        XCTAssertEqual(store.selectedTabID(for: .secondary), rightID)
+    }
+
+    func testTapOnUnplacedTabAsksForPaneThenPlacementSticks() {
+        let (store, _) = makeStore()
+        let unplacedID = store.addTab()
+        let lastID = store.addTab()
+        store.toggleSplit()
+        XCTAssertNil(store.paneShowing(unplacedID))
+
+        store.handleTabTap(unplacedID)
+        XCTAssertEqual(store.panePlacementPromptTabID, unplacedID)
+
+        store.placeTab(unplacedID, in: .primary)
+        XCTAssertNil(store.panePlacementPromptTabID)
+        XCTAssertEqual(store.selectedTabID(for: .primary), unplacedID)
+
+        // Once placed left, a plain tap keeps returning it to the left pane.
+        store.handleTabTap(lastID)
+        XCTAssertEqual(store.selectedTabID(for: .primary), lastID)
+        store.handleTabTap(unplacedID)
+        XCTAssertEqual(store.selectedTabID(for: .primary), unplacedID)
+        XCTAssertEqual(store.activePane, .primary)
+    }
+
+    func testFinishTabDragPlacesDraggedTabInSplit() {
+        let (store, _) = makeStore()
+        let firstID = store.selectedTabID(for: .primary)
+        let draggedID = store.addTab()
+
+        store.beginTabDrag(draggedID)
+        store.updateTabDrag(location: CGPoint(x: 40, y: 600))
+        store.updateTabDragTarget(.split(.leading))
+        store.finishTabDrag()
+
+        XCTAssertNil(store.tabDragState)
+        XCTAssertTrue(store.activeWorkspace.splitEnabled)
+        XCTAssertEqual(store.activeWorkspace.splitAxis, .horizontal)
+        XCTAssertEqual(store.selectedTabID(for: .primary), draggedID)
+        XCTAssertEqual(store.selectedTabID(for: .secondary), firstID)
+    }
+
+    func testDroppingOnBottomEdgeCreatesStackedSplit() {
+        let (store, _) = makeStore()
+        let firstID = store.selectedTabID(for: .primary)
+        let draggedID = store.addTab()
+
+        store.beginTabDrag(draggedID)
+        store.updateTabDragTarget(.split(.bottom))
+        store.finishTabDrag()
+
+        XCTAssertTrue(store.activeWorkspace.splitEnabled)
+        XCTAssertEqual(store.activeWorkspace.splitAxis, .vertical)
+        XCTAssertEqual(store.selectedTabID(for: .primary), firstID)
+        XCTAssertEqual(store.selectedTabID(for: .secondary), draggedID)
+        XCTAssertEqual(store.activePane, .secondary)
+    }
+
+    func testFinishTabDragOnOverviewSelectsHoveredTab() {
+        let (store, _) = makeStore()
+        let firstID = store.selectedTabID(for: .primary)
+        let draggedID = store.addTab()
+
+        store.beginTabDrag(draggedID)
+        store.updateTabDragTarget(.tab(firstID))
+        store.finishTabDrag()
+
+        XCTAssertNil(store.tabDragState)
+        XCTAssertFalse(store.activeWorkspace.splitEnabled)
+        XCTAssertEqual(store.selectedTabID(for: .primary), firstID)
+    }
+
+    func testClosingSecondaryTabWithNoReplacementEndsSplit() {
+        let (store, _) = makeStore()
+        store.toggleSplit()
+        let secondaryID = store.selectedTabID(for: .secondary)
+
+        store.closeTab(secondaryID)
+
+        XCTAssertFalse(store.activeWorkspace.splitEnabled)
+        XCTAssertEqual(store.activePane, .primary)
+        XCTAssertNotEqual(store.selectedTabID(for: .secondary), secondaryID)
+    }
+
+    func testSplitPanesNeverShareOneTab() {
+        let (store, _) = makeStore()
+        store.addTab()
+        store.addTab()
+        store.toggleSplit()
+
+        store.closeTab(store.selectedTabID(for: .secondary))
+
+        if store.activeWorkspace.splitEnabled {
+            XCTAssertNotEqual(
+                store.selectedTabID(for: .primary),
+                store.selectedTabID(for: .secondary)
+            )
+        }
+    }
+
+    func testCorruptSplitSnapshotSharingOneTabIsRepairedOnLaunch() throws {
+        let (_, defaults) = makeStore()
+        let key = "corrupt.split.snapshot"
+        let tabID = UUID()
+        let workspaceID = UUID()
+        let corrupt: [String: Any] = [
+            "workspaces": [[
+                "id": workspaceID.uuidString,
+                "name": "Corrupt",
+                "tabs": [[
+                    "id": tabID.uuidString,
+                    "title": "Only tab",
+                    "urlString": "https://example.com",
+                    "isPinned": false
+                ]],
+                "primaryTabID": tabID.uuidString,
+                "secondaryTabID": tabID.uuidString,
+                "splitEnabled": true,
+                "splitRatio": 0.5
+            ]],
+            "activeWorkspaceID": workspaceID.uuidString,
+            "groups": [],
+            "bookmarks": [],
+            "commandBarCollapsed": false
+        ]
+        defaults.set(try JSONSerialization.data(withJSONObject: corrupt), forKey: key)
+
+        let restored = WorkspaceBrowserStore(defaults: defaults, storageKey: key)
+
+        XCTAssertFalse(restored.activeWorkspace.splitEnabled)
+        XCTAssertNil(restored.activeWorkspace.secondaryTabID)
+        defaults.removeObject(forKey: key)
+    }
+
+    func testWorkspaceScopedBookmarkVisibility() {
+        let (store, _) = makeStore()
+        let mainID = store.activeWorkspaceID
+        store.addBookmark(
+            title: "Scoped", urlString: "https://scoped.example.ts.net",
+            groupID: nil, isPinned: true, workspaceID: mainID
+        )
+        store.addBookmark(
+            title: "Shared", urlString: "https://shared.example.ts.net",
+            groupID: nil, isPinned: true, workspaceID: nil
+        )
+
+        XCTAssertEqual(store.visibleBookmarks.count, 2)
+
+        store.addWorkspace(name: "Ops")
+
+        XCTAssertEqual(store.visibleBookmarks.map(\.title), ["Shared"])
+        XCTAssertEqual(store.pinnedBookmarks.map(\.title), ["Shared"])
+
+        store.selectWorkspace(mainID)
+        XCTAssertEqual(store.visibleBookmarks.count, 2)
+    }
+
+    func testBookmarkWorkspaceAssignmentPersists() {
+        let (store, defaults) = makeStore()
+        let key = "bookmark.workspace.snapshot"
+        let persistentStore = WorkspaceBrowserStore(defaults: defaults, storageKey: key)
+        persistentStore.addBookmark(
+            title: "Scoped", urlString: "https://scoped.example.ts.net",
+            groupID: nil, isPinned: false, workspaceID: persistentStore.activeWorkspaceID
+        )
+
+        let restored = WorkspaceBrowserStore(defaults: defaults, storageKey: key)
+        XCTAssertEqual(restored.bookmarks.first?.workspaceID, restored.activeWorkspaceID)
 
         defaults.removeObject(forKey: key)
         store.resetForTesting()

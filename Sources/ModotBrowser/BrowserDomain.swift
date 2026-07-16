@@ -9,6 +9,43 @@ enum BrowserPane: String, Codable, CaseIterable, Identifiable, Sendable {
     var compactLabel: String { self == .primary ? "L" : "R" }
 }
 
+enum BrowserSplitAxis: String, Codable, Sendable {
+    case horizontal
+    case vertical
+
+    func badge(for pane: BrowserPane) -> String {
+        switch (self, pane) {
+        case (.horizontal, .primary): "L"
+        case (.horizontal, .secondary): "R"
+        case (.vertical, .primary): "T"
+        case (.vertical, .secondary): "B"
+        }
+    }
+}
+
+/// Which edge of the canvas a dragged tab was dropped on. Left/right create a
+/// side-by-side split; top/bottom create a stacked split.
+enum SplitPlacement: Equatable, Sendable {
+    case leading
+    case trailing
+    case top
+    case bottom
+
+    var axis: BrowserSplitAxis {
+        switch self {
+        case .leading, .trailing: .horizontal
+        case .top, .bottom: .vertical
+        }
+    }
+
+    var pane: BrowserPane {
+        switch self {
+        case .leading, .top: .primary
+        case .trailing, .bottom: .secondary
+        }
+    }
+}
+
 struct BrowserTabRecord: Codable, Equatable, Identifiable, Sendable {
     let id: UUID
     var title: String
@@ -17,6 +54,7 @@ struct BrowserTabRecord: Codable, Equatable, Identifiable, Sendable {
     var groupID: UUID?
     var stackID: UUID?
     var lastAccessedAt: Date
+    var preferredPane: BrowserPane?
 
     init(
         id: UUID,
@@ -25,7 +63,8 @@ struct BrowserTabRecord: Codable, Equatable, Identifiable, Sendable {
         isPinned: Bool,
         groupID: UUID?,
         stackID: UUID? = nil,
-        lastAccessedAt: Date = .now
+        lastAccessedAt: Date = .now,
+        preferredPane: BrowserPane? = nil
     ) {
         self.id = id
         self.title = title
@@ -34,6 +73,7 @@ struct BrowserTabRecord: Codable, Equatable, Identifiable, Sendable {
         self.groupID = groupID
         self.stackID = stackID
         self.lastAccessedAt = lastAccessedAt
+        self.preferredPane = preferredPane
     }
 
     static func start(id: UUID = UUID(), now: Date = .now) -> BrowserTabRecord {
@@ -48,7 +88,7 @@ struct BrowserTabRecord: Codable, Equatable, Identifiable, Sendable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, title, urlString, isPinned, groupID, stackID, lastAccessedAt
+        case id, title, urlString, isPinned, groupID, stackID, lastAccessedAt, preferredPane
     }
 
     init(from decoder: any Decoder) throws {
@@ -60,6 +100,7 @@ struct BrowserTabRecord: Codable, Equatable, Identifiable, Sendable {
         groupID = try values.decodeIfPresent(UUID.self, forKey: .groupID)
         stackID = try values.decodeIfPresent(UUID.self, forKey: .stackID)
         lastAccessedAt = try values.decodeIfPresent(Date.self, forKey: .lastAccessedAt) ?? .now
+        preferredPane = try values.decodeIfPresent(BrowserPane.self, forKey: .preferredPane)
     }
 }
 
@@ -89,6 +130,7 @@ struct BrowserWorkspace: Codable, Equatable, Identifiable, Sendable {
     var secondaryTabID: UUID?
     var splitEnabled: Bool
     var splitRatio: Double
+    var splitAxis: BrowserSplitAxis
     var tabStacks: [BrowserTabStack]
     var archivedTabs: [StoredTabRecord]
     var recentlyClosedTabs: [StoredTabRecord]
@@ -101,6 +143,7 @@ struct BrowserWorkspace: Codable, Equatable, Identifiable, Sendable {
         secondaryTabID: UUID?,
         splitEnabled: Bool,
         splitRatio: Double,
+        splitAxis: BrowserSplitAxis = .horizontal,
         tabStacks: [BrowserTabStack] = [],
         archivedTabs: [StoredTabRecord] = [],
         recentlyClosedTabs: [StoredTabRecord] = []
@@ -112,6 +155,7 @@ struct BrowserWorkspace: Codable, Equatable, Identifiable, Sendable {
         self.secondaryTabID = secondaryTabID
         self.splitEnabled = splitEnabled
         self.splitRatio = splitRatio
+        self.splitAxis = splitAxis
         self.tabStacks = tabStacks
         self.archivedTabs = archivedTabs
         self.recentlyClosedTabs = recentlyClosedTabs
@@ -131,7 +175,7 @@ struct BrowserWorkspace: Codable, Equatable, Identifiable, Sendable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, name, tabs, primaryTabID, secondaryTabID, splitEnabled, splitRatio
+        case id, name, tabs, primaryTabID, secondaryTabID, splitEnabled, splitRatio, splitAxis
         case tabStacks, archivedTabs, recentlyClosedTabs
     }
 
@@ -144,6 +188,7 @@ struct BrowserWorkspace: Codable, Equatable, Identifiable, Sendable {
         secondaryTabID = try values.decodeIfPresent(UUID.self, forKey: .secondaryTabID)
         splitEnabled = try values.decodeIfPresent(Bool.self, forKey: .splitEnabled) ?? false
         splitRatio = try values.decodeIfPresent(Double.self, forKey: .splitRatio) ?? 0.5
+        splitAxis = try values.decodeIfPresent(BrowserSplitAxis.self, forKey: .splitAxis) ?? .horizontal
         tabStacks = try values.decodeIfPresent([BrowserTabStack].self, forKey: .tabStacks) ?? []
         archivedTabs = try values.decodeIfPresent([StoredTabRecord].self, forKey: .archivedTabs) ?? []
         recentlyClosedTabs = try values.decodeIfPresent([StoredTabRecord].self, forKey: .recentlyClosedTabs) ?? []
@@ -162,6 +207,8 @@ struct ServiceBookmark: Codable, Equatable, Identifiable, Sendable {
     var groupID: UUID?
     var isPinned: Bool
     var monitorsStatus: Bool
+    /// nil means the bookmark is shared across every workspace.
+    var workspaceID: UUID?
 
     init(
         id: UUID,
@@ -169,7 +216,8 @@ struct ServiceBookmark: Codable, Equatable, Identifiable, Sendable {
         urlString: String,
         groupID: UUID?,
         isPinned: Bool,
-        monitorsStatus: Bool = true
+        monitorsStatus: Bool = true,
+        workspaceID: UUID? = nil
     ) {
         self.id = id
         self.title = title
@@ -177,12 +225,17 @@ struct ServiceBookmark: Codable, Equatable, Identifiable, Sendable {
         self.groupID = groupID
         self.isPinned = isPinned
         self.monitorsStatus = monitorsStatus
+        self.workspaceID = workspaceID
     }
 
     var url: URL? { BrowserURL.resolve(urlString) }
 
+    func isVisible(in workspaceID: UUID) -> Bool {
+        self.workspaceID == nil || self.workspaceID == workspaceID
+    }
+
     private enum CodingKeys: String, CodingKey {
-        case id, title, urlString, groupID, isPinned, monitorsStatus
+        case id, title, urlString, groupID, isPinned, monitorsStatus, workspaceID
     }
 
     init(from decoder: any Decoder) throws {
@@ -193,6 +246,7 @@ struct ServiceBookmark: Codable, Equatable, Identifiable, Sendable {
         groupID = try values.decodeIfPresent(UUID.self, forKey: .groupID)
         isPinned = try values.decodeIfPresent(Bool.self, forKey: .isPinned) ?? false
         monitorsStatus = try values.decodeIfPresent(Bool.self, forKey: .monitorsStatus) ?? true
+        workspaceID = try values.decodeIfPresent(UUID.self, forKey: .workspaceID)
     }
 }
 
@@ -228,15 +282,6 @@ struct SiteSettingsRecord: Codable, Equatable, Identifiable, Sendable {
     var id: String { "\(workspaceID.uuidString)|\(host.lowercased())" }
 }
 
-struct PageNoteRecord: Codable, Equatable, Identifiable, Sendable {
-    let id: UUID
-    var workspaceID: UUID
-    var pageKey: String
-    var pageTitle: String
-    var text: String
-    var modifiedAt: Date
-}
-
 struct BrowserSnapshot: Codable, Equatable, Sendable {
     var workspaces: [BrowserWorkspace]
     var activeWorkspaceID: UUID
@@ -244,7 +289,6 @@ struct BrowserSnapshot: Codable, Equatable, Sendable {
     var bookmarks: [ServiceBookmark]
     var commandBarCollapsed: Bool
     var siteSettings: [SiteSettingsRecord]
-    var pageNotes: [PageNoteRecord]
     var autoArchiveAfterDays: Int
 
     init(
@@ -254,7 +298,6 @@ struct BrowserSnapshot: Codable, Equatable, Sendable {
         bookmarks: [ServiceBookmark],
         commandBarCollapsed: Bool,
         siteSettings: [SiteSettingsRecord] = [],
-        pageNotes: [PageNoteRecord] = [],
         autoArchiveAfterDays: Int = 14
     ) {
         self.workspaces = workspaces
@@ -263,13 +306,12 @@ struct BrowserSnapshot: Codable, Equatable, Sendable {
         self.bookmarks = bookmarks
         self.commandBarCollapsed = commandBarCollapsed
         self.siteSettings = siteSettings
-        self.pageNotes = pageNotes
         self.autoArchiveAfterDays = autoArchiveAfterDays
     }
 
     private enum CodingKeys: String, CodingKey {
         case workspaces, activeWorkspaceID, groups, bookmarks, commandBarCollapsed
-        case siteSettings, pageNotes, autoArchiveAfterDays
+        case siteSettings, autoArchiveAfterDays
     }
 
     init(from decoder: any Decoder) throws {
@@ -280,7 +322,6 @@ struct BrowserSnapshot: Codable, Equatable, Sendable {
         bookmarks = try values.decodeIfPresent([ServiceBookmark].self, forKey: .bookmarks) ?? []
         commandBarCollapsed = try values.decodeIfPresent(Bool.self, forKey: .commandBarCollapsed) ?? false
         siteSettings = try values.decodeIfPresent([SiteSettingsRecord].self, forKey: .siteSettings) ?? []
-        pageNotes = try values.decodeIfPresent([PageNoteRecord].self, forKey: .pageNotes) ?? []
         autoArchiveAfterDays = try values.decodeIfPresent(Int.self, forKey: .autoArchiveAfterDays) ?? 14
     }
 }
@@ -291,8 +332,8 @@ enum BrowserSheetDestination: Identifiable, Equatable {
     case addBookmark(title: String, url: String)
     case createTabStack
     case siteSettings
-    case pageNote
     case pageTools
+    case developerTools
     case tabArchive
     case downloads
 
@@ -303,12 +344,27 @@ enum BrowserSheetDestination: Identifiable, Equatable {
         case .addBookmark: "add-bookmark"
         case .createTabStack: "create-tab-stack"
         case .siteSettings: "site-settings"
-        case .pageNote: "page-note"
         case .pageTools: "page-tools"
+        case .developerTools: "developer-tools"
         case .tabArchive: "tab-archive"
         case .downloads: "downloads"
         }
     }
+}
+
+/// Transient state for the long-press tab drag interaction: scrubbing across
+/// the full-width tab overview at the top, or aiming at a split drop zone at
+/// the bottom of the canvas.
+struct TabDragState: Equatable {
+    let tabID: UUID
+    /// nil until the finger moves after the long press is recognized.
+    var location: CGPoint?
+    var target: TabDragTarget?
+}
+
+enum TabDragTarget: Equatable {
+    case tab(UUID)
+    case split(SplitPlacement)
 }
 
 struct SharePayload: Identifiable, Equatable {

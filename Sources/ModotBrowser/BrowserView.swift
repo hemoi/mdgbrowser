@@ -22,10 +22,21 @@ struct BrowserView: View {
                 CompactCommandBar(store: store, terminalStore: terminalStore, aiStore: aiStore)
                 WorkspaceCanvas(store: store)
                     .overlay {
-                        BrowserPetOverlay(browserStore: store, petStore: petStore, aiStore: aiStore)
+                        BrowserPetOverlay(
+                            browserStore: store,
+                            petStore: petStore,
+                            aiStore: aiStore,
+                            terminalStore: terminalStore
+                        )
                     }
             }
             .background(theme.background)
+
+            if store.tabDragState != nil {
+                TabDragOverlay(store: store)
+                    .transition(.opacity)
+                    .zIndex(6)
+            }
 
             if store.sidebarVisible {
                 theme.label.opacity(0.16)
@@ -97,7 +108,9 @@ struct BrowserView: View {
                 .opacity(0.001)
                 .accessibilityHidden(true)
         }
+        .coordinateSpace(name: BrowserRootCoordinateSpace.name)
         .animation(reduceMotion ? .linear(duration: 0.14) : .snappy(duration: 0.24), value: store.sidebarVisible)
+        .animation(reduceMotion ? .linear(duration: 0.14) : .snappy(duration: 0.26), value: store.tabDragState?.tabID)
         .animation(reduceMotion ? .linear(duration: 0.14) : .snappy(duration: 0.24), value: aiStore.isPresented)
         .animation(reduceMotion ? .linear(duration: 0.14) : .snappy(duration: 0.28), value: terminalStore.launcherEnabled)
         .animation(reduceMotion ? .linear(duration: 0.14) : .snappy(duration: 0.28), value: terminalStore.presentedSurface)
@@ -126,6 +139,14 @@ struct BrowserView: View {
                 .presentationDragIndicator(.visible)
         }
         .task {
+            // tmux @modot_* events (optional, hook-provided) surface as pet
+            // speech bubbles tied to the terminal tab they came from.
+            terminalStore.agentEventHandler = { notification in
+                petStore.showMessage(
+                    notification.petMessageText,
+                    sourceTerminalTabID: notification.tabID
+                )
+            }
             handlePendingIntent()
             await store.prepareWebFeatures()
             await aiStore.prepareWebFeatures()

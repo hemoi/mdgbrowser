@@ -30,15 +30,18 @@ struct TerminalLauncherButton: View {
 struct FloatingTerminalWindow: View {
     @State private var restingOffset: CGSize = .zero
     @GestureState private var dragOffset: CGSize = .zero
+    @State private var resizeStartSize: CGSize?
+    // Persisted so the window keeps its size across sessions; 0 = default.
+    @AppStorage("modot-terminal.floating-width") private var storedWidth = 0.0
+    @AppStorage("modot-terminal.floating-height") private var storedHeight = 0.0
 
     let store: TerminalWorkspaceStore
 
+    private static let minPanelSize = CGSize(width: 340, height: 260)
+
     var body: some View {
         GeometryReader { geometry in
-            let panelSize = CGSize(
-                width: min(760, max(geometry.size.width - 24, 1)),
-                height: min(540, max(geometry.size.height - 80, 1))
-            )
+            let panelSize = panelSize(in: geometry.size)
             let currentOffset = clampedOffset(
                 CGSize(
                     width: restingOffset.width + dragOffset.width,
@@ -56,12 +59,55 @@ struct FloatingTerminalWindow: View {
                     RoundedRectangle(cornerRadius: 14, style: .continuous)
                         .stroke(Color.primary.opacity(0.16), lineWidth: 0.75)
                 }
+                .overlay(alignment: .bottomTrailing) {
+                    resizeHandle(containerSize: geometry.size)
+                }
                 .shadow(color: .black.opacity(0.24), radius: 28, y: 12)
                 .position(x: geometry.size.width / 2, y: geometry.size.height / 2)
                 .offset(currentOffset)
         }
         .padding(8)
         .accessibilityIdentifier("terminal.floating-window")
+    }
+
+    private func panelSize(in containerSize: CGSize) -> CGSize {
+        let maxWidth = max(containerSize.width - 24, 1)
+        let maxHeight = max(containerSize.height - 80, 1)
+        let defaultWidth = min(760, maxWidth)
+        let defaultHeight = min(540, maxHeight)
+        let width = storedWidth > 0 ? min(max(storedWidth, Self.minPanelSize.width), maxWidth) : defaultWidth
+        let height = storedHeight > 0 ? min(max(storedHeight, Self.minPanelSize.height), maxHeight) : defaultHeight
+        // Whole points: fractional sizes make the terminal re-rasterize on
+        // every layout pass while the keyboard animates.
+        return CGSize(width: width.rounded(), height: height.rounded())
+    }
+
+    private func resizeHandle(containerSize: CGSize) -> some View {
+        Image(systemName: "arrow.up.left.and.arrow.down.right")
+            .font(.system(size: 10, weight: .bold))
+            .foregroundStyle(.secondary)
+            .frame(width: 30, height: 30)
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 2)
+                    .onChanged { value in
+                        if resizeStartSize == nil {
+                            resizeStartSize = panelSize(in: containerSize)
+                        }
+                        guard let start = resizeStartSize else { return }
+                        storedWidth = min(
+                            max(start.width + value.translation.width, Self.minPanelSize.width),
+                            max(containerSize.width - 24, Self.minPanelSize.width)
+                        )
+                        storedHeight = min(
+                            max(start.height + value.translation.height, Self.minPanelSize.height),
+                            max(containerSize.height - 80, Self.minPanelSize.height)
+                        )
+                    }
+                    .onEnded { _ in resizeStartSize = nil }
+            )
+            .accessibilityLabel("Resize terminal window")
+            .accessibilityIdentifier("terminal.resize")
     }
 
     private func dragGesture(panelSize: CGSize, containerSize: CGSize) -> AnyGesture<DragGesture.Value> {
@@ -124,6 +170,9 @@ struct TerminalPanel: View {
             case .profileEditor(let profile):
                 SSHProfileEditor(profile: profile, store: store)
                     .environment(theme)
+            case .tmuxSessions:
+                TmuxSessionBrowserSheet(store: store)
+                    .environment(theme)
             }
         }
         .alert(item: $store.pendingHostTrust) { request in
@@ -172,6 +221,13 @@ struct TerminalPanel: View {
             .scrollIndicators(.hidden)
 
             terminalAddMenu
+
+            if !store.profiles.isEmpty {
+                CompactIconButton(systemName: "rectangle.stack", accessibilityLabel: "Browse tmux sessions") {
+                    store.presentedSheet = .tmuxSessions
+                }
+                .accessibilityIdentifier("terminal.tmux-sessions")
+            }
 
             CompactIconButton(systemName: "gearshape", accessibilityLabel: "Manage SSH profiles") {
                 store.presentedSheet = .profiles
@@ -262,6 +318,10 @@ struct TerminalPanel: View {
 
                 Divider()
 
+                Button("Browse tmux Sessions", systemImage: "rectangle.stack") {
+                    store.presentedSheet = .tmuxSessions
+                }
+
                 Button("Manage Profiles", systemImage: "gearshape") {
                     store.presentedSheet = .profiles
                 }
@@ -306,6 +366,15 @@ struct TerminalPanel: View {
     }
 
     private func hostTrustAlert(_ request: HostTrustRequest) -> Alert {
+        TerminalHostTrustAlert.alert(for: request, store: store)
+    }
+}
+
+/// Shared host-trust alert so the terminal panel and the tmux session browser
+/// present identical wording for the same request.
+@MainActor
+enum TerminalHostTrustAlert {
+    static func alert(for request: HostTrustRequest, store: TerminalWorkspaceStore) -> Alert {
         let title = request.hostKeyChanged ? "SSH Host Key Changed" : "Trust SSH Host?"
         let explanation = request.hostKeyChanged
             ? "The host key for \(request.host) differs from the saved key. Only continue if the server key was intentionally replaced."

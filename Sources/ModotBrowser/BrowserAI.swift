@@ -227,10 +227,12 @@ struct BrowserAIPanelHost: View {
     }
 
     private func panelWidth(for size: CGSize) -> CGFloat {
+        // Whole points: fractional widths make WKWebView re-raster on every
+        // layout pass.
         if horizontalSizeClass == .compact {
-            return min(size.width, max(320, size.width * 0.94))
+            return min(size.width, max(320, size.width * 0.94)).rounded()
         }
-        return min(size.width, min(440, max(360, size.width * 0.38)))
+        return min(size.width, min(440, max(360, size.width * 0.38))).rounded()
     }
 }
 
@@ -265,11 +267,10 @@ private struct BrowserAIPanel: View {
             Divider()
             promptComposer
         }
-        .background(theme.raisedBackground)
+        .background(theme.background)
         .overlay(alignment: .leading) {
             Rectangle().fill(theme.border).frame(width: 0.5)
         }
-        .shadow(color: theme.label.opacity(0.16), radius: 24, x: -7, y: 0)
         .accessibilityIdentifier("browser.ai.panel")
         .task(id: session.instanceID) {
             session.loadIfNeeded(fallbackURLString: aiStore.settings.effectiveURL.absoluteString)
@@ -306,25 +307,24 @@ private struct BrowserAIPanel: View {
                     aiStore.settingsPresented = true
                 }
             } label: {
-                Label(aiStore.settings.displayName, systemImage: "sparkles")
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(theme.label)
-                    .lineLimit(1)
+                HStack(spacing: 5) {
+                    Text(aiStore.settings.displayName)
+                        .lineLimit(1)
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 8, weight: .bold))
+                        .foregroundStyle(theme.mutedLabel)
+                }
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(theme.label)
+                .padding(.horizontal, 9)
+                .frame(height: 30)
+                .background(theme.raisedBackground, in: RoundedRectangle(cornerRadius: 7))
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Select AI provider")
+            .accessibilityIdentifier("ai.settings")
 
             Spacer(minLength: 0)
-
-            Button {
-                aiStore.settingsPresented = true
-            } label: {
-                Image(systemName: "gearshape")
-                    .frame(width: 34, height: 34)
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("AI settings")
-            .accessibilityIdentifier("ai.settings")
 
             Button {
                 withAnimation(reduceMotion ? .linear(duration: 0.14) : .snappy(duration: 0.24)) {
@@ -332,63 +332,58 @@ private struct BrowserAIPanel: View {
                 }
             } label: {
                 Image(systemName: "xmark")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(theme.label)
                     .frame(width: 34, height: 34)
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Close AI panel")
             .accessibilityIdentifier("ai.close")
         }
-        .padding(.horizontal, 12)
-        .frame(height: 48)
+        .padding(.horizontal, 10)
+        .frame(height: 44)
     }
 
     private var promptComposer: some View {
         @Bindable var aiStore = aiStore
 
         return VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 8) {
-                Button {
+            HStack(alignment: .bottom, spacing: 6) {
+                TextField("Ask about this page…", text: $aiStore.prompt, axis: .vertical)
+                    .lineLimit(1...3)
+                    .textInputAutocapitalization(.sentences)
+                    .autocorrectionDisabled(false)
+                    .font(.system(size: 13))
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 8)
+                    .background(theme.raisedBackground, in: RoundedRectangle(cornerRadius: 9))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 9)
+                            .stroke(theme.border, lineWidth: 0.75)
+                    }
+                    .accessibilityIdentifier("ai.prompt")
+
+                composerButton(
+                    systemName: "link.badge.plus",
+                    label: "Insert current page",
+                    disabled: browserStore.currentPageURL == nil
+                ) {
                     aiStore.insertCurrentPage(
                         url: browserStore.currentPageURL,
                         title: browserStore.currentPageTitle
                     )
-                } label: {
-                    Label("Current page", systemImage: "link.badge.plus")
-                        .font(.caption.weight(.semibold))
                 }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                .disabled(browserStore.currentPageURL == nil)
                 .accessibilityIdentifier("ai.current-page")
 
-                Spacer()
-
-                Button {
+                composerButton(
+                    systemName: "doc.on.doc",
+                    label: "Copy AI prompt",
+                    disabled: aiStore.prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ) {
                     aiStore.copyPrompt()
-                } label: {
-                    Image(systemName: "doc.on.doc")
-                        .frame(width: 28, height: 28)
                 }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                .disabled(aiStore.prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                .accessibilityLabel("Copy AI prompt")
                 .accessibilityIdentifier("ai.copy-prompt")
             }
-
-            TextField("Ask about this page…", text: $aiStore.prompt, axis: .vertical)
-                .lineLimit(1...3)
-                .textInputAutocapitalization(.sentences)
-                .autocorrectionDisabled(false)
-                .font(.subheadline)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 8)
-                .background(theme.background, in: RoundedRectangle(cornerRadius: 10))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 10)
-                        .stroke(theme.border, lineWidth: 0.75)
-                }
-                .accessibilityIdentifier("ai.prompt")
 
             if let statusMessage = aiStore.statusMessage {
                 Text(statusMessage)
@@ -397,8 +392,30 @@ private struct BrowserAIPanel: View {
                     .transition(reduceMotion ? .opacity : .opacity.combined(with: .move(edge: .bottom)))
             }
         }
-        .padding(12)
-        .background(theme.background.opacity(0.82))
+        .padding(10)
+        .background(theme.background)
+    }
+
+    private func composerButton(
+        systemName: String,
+        label: String,
+        disabled: Bool,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Image(systemName: systemName)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(theme.label)
+                .frame(width: 34, height: 34)
+                .overlay {
+                    RoundedRectangle(cornerRadius: 9)
+                        .stroke(theme.border, lineWidth: 0.75)
+                }
+        }
+        .buttonStyle(.plain)
+        .disabled(disabled)
+        .opacity(disabled ? 0.35 : 1)
+        .accessibilityLabel(label)
     }
 }
 

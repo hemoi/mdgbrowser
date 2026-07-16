@@ -170,6 +170,7 @@ enum TerminalSurface: String, Identifiable {
 enum TerminalSheetDestination: Identifiable, Equatable {
     case profiles
     case profileEditor(SSHProfile)
+    case tmuxSessions
 
     var id: String {
         switch self {
@@ -177,6 +178,8 @@ enum TerminalSheetDestination: Identifiable, Equatable {
             "profiles"
         case .profileEditor(let profile):
             "profile-editor-\(profile.id.uuidString)"
+        case .tmuxSessions:
+            "tmux-sessions"
         }
     }
 }

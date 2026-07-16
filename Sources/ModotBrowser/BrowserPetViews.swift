@@ -8,6 +8,7 @@ struct BrowserPetOverlay: View {
     let browserStore: WorkspaceBrowserStore
     let petStore: BrowserPetStore
     let aiStore: BrowserAIStore
+    let terminalStore: TerminalWorkspaceStore
 
     @GestureState private var dragTranslation = CGSize.zero
     @State private var dragAnimation: PetAnimationState?
@@ -24,12 +25,30 @@ struct BrowserPetOverlay: View {
             let animation = dragAnimation ?? (session.isLoading ? .running : petStore.animationState)
 
             ZStack {
+                if let message = petStore.activeMessage {
+                    PetSpeechBubble(text: message.text) {
+                        if let tabID = message.sourceTerminalTabID {
+                            terminalStore.presentTerminal()
+                            terminalStore.selectTab(tabID)
+                        }
+                        petStore.dismissActiveMessage()
+                    }
+                    .position(messageBubbleCenter(for: center, petSize: petSize, canvasSize: geometry.size))
+                    .transition(
+                        reduceMotion
+                            ? .opacity
+                            : .scale(scale: 0.9, anchor: .bottom).combined(with: .opacity)
+                    )
+                    .zIndex(2)
+                }
+
                 if petStore.quickActionsVisible {
                     PetQuickActionDock(
+                        actions: petStore.quickActions,
                         isLoading: session.isLoading,
-                        reload: { toggleLoading(session) },
-                        newTab: openNewTab,
-                        openAI: openAI,
+                        autoScrollEnabled: session.autoScrollEnabled,
+                        perform: perform,
+                        toggleAutoScroll: session.toggleAutoScroll,
                         settings: openSettings
                     )
                     .position(actionDockCenter(for: center, petSize: petSize, canvasSize: geometry.size))
@@ -41,7 +60,7 @@ struct BrowserPetOverlay: View {
                     .zIndex(1)
                 }
 
-                PetSpriteView(animation: animation, reduceMotion: reduceMotion)
+                PetSpriteView(atlas: petStore.activeAtlas, animation: animation, reduceMotion: reduceMotion)
                     .frame(width: petSize.width, height: petSize.height)
                     .contentShape(Rectangle())
                     .position(center)
@@ -52,7 +71,7 @@ struct BrowserPetOverlay: View {
                     }
                     .gesture(dragGesture(in: geometry.size))
                     .accessibilityElement(children: .ignore)
-                    .accessibilityLabel("Banana pet")
+                    .accessibilityLabel("Browser pet")
                     .accessibilityHint("Double tap to show browser shortcuts. Drag to move.")
                     .accessibilityIdentifier("pet.sample")
                     .accessibilityAddTraits(.isButton)
@@ -61,13 +80,17 @@ struct BrowserPetOverlay: View {
                     }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .animation(
+                reduceMotion ? .linear(duration: 0.12) : .snappy(duration: 0.22),
+                value: petStore.activeMessage
+            )
         }
         .sheet(item: $petStore.presentedSheet) { destination in
             switch destination {
             case .settings:
-                PetSettingsSheet(store: petStore)
+                PetSettingsSheet(store: petStore, session: browserStore.session(for: browserStore.activePane))
                     .environment(theme)
-                    .presentationDetents([.medium])
+                    .presentationDetents([.large])
                     .presentationDragIndicator(.visible)
             }
         }
@@ -111,8 +134,20 @@ struct BrowserPetOverlay: View {
         ).clamped()
     }
 
+    private func messageBubbleCenter(for petCenter: CGPoint, petSize: CGSize, canvasSize: CGSize) -> CGPoint {
+        // Sits above the pet, and above the quick-action dock when it is open.
+        let dockClearance: CGFloat = petStore.quickActionsVisible ? 52 : 0
+        let preferredY = petCenter.y - petSize.height / 2 - 32 - dockClearance
+        let y = preferredY >= 26 ? preferredY : petCenter.y + petSize.height / 2 + 32 + dockClearance
+
+        return CGPoint(
+            x: min(max(petCenter.x, 118), max(canvasSize.width - 118, 118)),
+            y: min(max(y, 26), canvasSize.height - 26)
+        )
+    }
+
     private func actionDockCenter(for petCenter: CGPoint, petSize: CGSize, canvasSize: CGSize) -> CGPoint {
-        let dockHalfWidth: CGFloat = 104
+        let dockHalfWidth = CGFloat(petStore.quickActions.count + 2) * 24 + 12
         let preferredY = petCenter.y - petSize.height / 2 - 28
         let y = preferredY >= 28 ? preferredY : petCenter.y + petSize.height / 2 + 28
 
@@ -141,6 +176,49 @@ struct BrowserPetOverlay: View {
             }
     }
 
+    private func perform(_ action: PetQuickAction) {
+        let session = browserStore.session(for: browserStore.activePane)
+        switch action {
+        case .reload:
+            toggleLoading(session)
+            return
+        case .newTab:
+            browserStore.addTab()
+        case .goBack:
+            session.goBack()
+        case .goForward:
+            session.goForward()
+        case .openAI:
+            aiStore.present()
+        case .toggleTerminal:
+            terminalStore.toggleSurface()
+        case .toggleSplit:
+            browserStore.toggleSplit()
+        case .commandPalette:
+            browserStore.commandPalettePresented = true
+        case .copyPageURL:
+            if let url = browserStore.currentPageURL {
+                UIPasteboard.general.string = url.absoluteString
+                browserStore.toastMessage = "Page link copied"
+            } else {
+                browserStore.toastMessage = "Open a webpage first"
+            }
+        case .pasteAndGo:
+            if let raw = UIPasteboard.general.string,
+               let url = BrowserURL.resolve(raw.trimmingCharacters(in: .whitespacesAndNewlines)) {
+                browserStore.open(url)
+            } else {
+                browserStore.toastMessage = "Clipboard has no address"
+            }
+        case .sendKey(let keystroke):
+            if !terminalStore.sendKeystroke(keystroke) {
+                browserStore.toastMessage = "Connect an SSH terminal first"
+            }
+        }
+        petStore.dismissQuickActions()
+        petStore.playWave()
+    }
+
     private func toggleLoading(_ session: BrowserSession) {
         if session.isLoading {
             session.stopLoading()
@@ -150,53 +228,71 @@ struct BrowserPetOverlay: View {
         petStore.dismissQuickActions()
     }
 
-    private func openNewTab() {
-        browserStore.addTab()
-        petStore.dismissQuickActions()
-        petStore.playWave()
-    }
-
-    private func openAI() {
-        aiStore.present()
-        petStore.dismissQuickActions()
-        petStore.playWave()
-    }
-
     private func openSettings() {
         petStore.dismissQuickActions()
         petStore.presentedSheet = .settings
     }
 }
 
+private struct PetSpeechBubble: View {
+    @Environment(BrowserTheme.self) private var theme
+
+    let text: String
+    let onTap: () -> Void
+
+    var body: some View {
+        Button(action: onTap) {
+            Text(text)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(theme.label)
+                .multilineTextAlignment(.leading)
+                .lineLimit(4)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 7)
+                .frame(maxWidth: 220, alignment: .leading)
+                .background(theme.raisedBackground, in: RoundedRectangle(cornerRadius: 9))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 9)
+                        .stroke(theme.border, lineWidth: 0.75)
+                }
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Pet message: \(text)")
+        .accessibilityHint("Double tap to open the terminal tab it came from.")
+        .accessibilityIdentifier("pet.message")
+    }
+}
+
 private struct PetQuickActionDock: View {
     @Environment(BrowserTheme.self) private var theme
 
+    let actions: [PetQuickAction]
     let isLoading: Bool
-    let reload: () -> Void
-    let newTab: () -> Void
-    let openAI: () -> Void
+    let autoScrollEnabled: Bool
+    let perform: (PetQuickAction) -> Void
+    let toggleAutoScroll: () -> Void
     let settings: () -> Void
 
     var body: some View {
         HStack(spacing: 2) {
+            ForEach(actions) { action in
+                actionButton(
+                    systemName: action == .reload && isLoading ? "xmark" : action.systemImage,
+                    label: action == .reload && isLoading ? "Stop loading" : action.label,
+                    identifier: "pet.action.\(action.id)"
+                ) {
+                    perform(action)
+                }
+            }
+
             actionButton(
-                systemName: isLoading ? "xmark" : "arrow.clockwise",
-                label: isLoading ? "Stop loading" : "Reload",
-                identifier: "pet.action.reload",
-                action: reload
+                systemName: autoScrollEnabled ? "pause.fill" : "arrow.down",
+                label: autoScrollEnabled ? "Pause auto-scroll" : "Start auto-scroll",
+                identifier: "pet.action.auto-scroll",
+                isActive: autoScrollEnabled,
+                action: toggleAutoScroll
             )
-            actionButton(
-                systemName: "plus",
-                label: "New tab",
-                identifier: "pet.action.new-tab",
-                action: newTab
-            )
-            actionButton(
-                systemName: "sparkles",
-                label: "Open AI assistant",
-                identifier: "pet.action.ai",
-                action: openAI
-            )
+
             actionButton(
                 systemName: "slider.horizontal.3",
                 label: "Pet settings",
@@ -210,7 +306,6 @@ private struct PetQuickActionDock: View {
             Capsule()
                 .stroke(theme.border, lineWidth: 0.75)
         }
-        .shadow(color: theme.label.opacity(0.12), radius: 10, y: 4)
         .accessibilityElement(children: .contain)
     }
 
@@ -218,12 +313,13 @@ private struct PetQuickActionDock: View {
         systemName: String,
         label: String,
         identifier: String,
+        isActive: Bool = false,
         action: @escaping () -> Void
     ) -> some View {
         Button(action: action) {
             Image(systemName: systemName)
                 .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(theme.label)
+                .foregroundStyle(isActive ? theme.tailnet : theme.label)
                 .frame(width: 44, height: 36)
                 .contentShape(Rectangle())
         }
@@ -234,18 +330,63 @@ private struct PetQuickActionDock: View {
 }
 
 private struct PetSettingsSheet: View {
+    @Environment(BrowserTheme.self) private var theme
     @Environment(\.dismiss) private var dismiss
+    @State private var galleryPresented = false
 
     let store: BrowserPetStore
+    let session: BrowserSession
 
     var body: some View {
         @Bindable var store = store
 
         NavigationStack {
             Form {
-                Section("Sample Pet") {
-                    LabeledContent("Pet", value: "Banana")
+                Section("Pet") {
+                    petRow(name: "Banana (bundled)", petID: nil)
+                    ForEach(store.installedPets) { pet in
+                        petRow(name: pet.displayName, petID: pet.id)
+                            .swipeActions(edge: .trailing) {
+                                Button("Delete", systemImage: "trash", role: .destructive) {
+                                    store.deletePet(pet.id)
+                                }
+                            }
+                    }
 
+                    Button("Get pets from codex-pets.net", systemImage: "sparkle.magnifyingglass") {
+                        galleryPresented = true
+                    }
+                    .accessibilityIdentifier("pet.settings.gallery")
+                }
+
+                Section {
+                    ForEach(0..<PetQuickAction.maxSlots, id: \.self) { index in
+                        Picker("Button \(index + 1)", selection: slotBinding(index)) {
+                            Text("None").tag(PetQuickAction?.none)
+                            ForEach(PetQuickAction.allOptions) { option in
+                                Label(option.label, systemImage: option.systemImage)
+                                    .tag(Optional(option))
+                            }
+                        }
+                    }
+                } header: {
+                    Text("Quick actions")
+                } footer: {
+                    Text("Key actions send Esc, Ctrl+C, arrows, and friends straight to the focused SSH terminal.")
+                }
+
+                Section("Reading") {
+                    Toggle(
+                        "Auto-scroll",
+                        isOn: Binding(
+                            get: { session.autoScrollEnabled },
+                            set: { session.setAutoScrollEnabled($0) }
+                        )
+                    )
+                    .accessibilityIdentifier("pet.settings.auto-scroll")
+                }
+
+                Section("Appearance") {
                     VStack(alignment: .leading, spacing: 10) {
                         HStack {
                             Text("Size")
@@ -264,9 +405,7 @@ private struct PetSettingsSheet: View {
                         )
                         .accessibilityLabel("Pet size")
                     }
-                }
 
-                Section {
                     Button("Reset Position", systemImage: "arrow.counterclockwise") {
                         store.resetPosition()
                     }
@@ -280,16 +419,45 @@ private struct PetSettingsSheet: View {
                 }
             }
         }
+        .sheet(isPresented: $galleryPresented) {
+            CodexPetGallerySheet(petStore: store)
+                .environment(theme)
+                .presentationDetents([.large])
+        }
+    }
+
+    private func petRow(name: String, petID: String?) -> some View {
+        Button {
+            store.applyPet(petID)
+        } label: {
+            HStack {
+                Text(name)
+                    .foregroundStyle(.primary)
+                Spacer()
+                if store.selectedPetID == petID {
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 12, weight: .semibold))
+                }
+            }
+        }
+    }
+
+    private func slotBinding(_ index: Int) -> Binding<PetQuickAction?> {
+        Binding(
+            get: { store.quickAction(at: index) },
+            set: { store.setQuickAction($0, at: index) }
+        )
     }
 }
 
 private struct PetSpriteView: View {
+    let atlas: ActivePetAtlas
     let animation: PetAnimationState
     let reduceMotion: Bool
 
     var body: some View {
         if reduceMotion {
-            PetAtlasFrameView(row: animation.row, column: 0)
+            PetAtlasFrameView(atlas: atlas, row: animation.row, column: 0)
                 .transaction { transaction in
                     transaction.animation = nil
                 }
@@ -297,7 +465,7 @@ private struct PetSpriteView: View {
             TimelineView(.periodic(from: .now, by: animation.frameDuration)) { context in
                 let frame = Int(context.date.timeIntervalSinceReferenceDate / animation.frameDuration)
                     % animation.frameCount
-                PetAtlasFrameView(row: animation.row, column: frame)
+                PetAtlasFrameView(atlas: atlas, row: animation.row, column: frame)
                     .transaction { transaction in
                         transaction.animation = nil
                     }
@@ -307,6 +475,7 @@ private struct PetSpriteView: View {
 }
 
 private struct PetAtlasFrameView: UIViewRepresentable {
+    let atlas: ActivePetAtlas
     let row: Int
     let column: Int
 
@@ -315,31 +484,20 @@ private struct PetAtlasFrameView: UIViewRepresentable {
     }
 
     func updateUIView(_ view: PetAtlasView, context: Context) {
-        view.show(row: row, column: column)
+        view.show(atlas: atlas, row: row, column: column)
     }
 }
 
 private final class PetAtlasView: UIView {
-    private static let columns: CGFloat = 8
-    private static let rows: CGFloat = 9
-    private static let atlasImage: CGImage? = {
-        guard let url = Bundle.main.url(
-            forResource: "spritesheet",
-            withExtension: "webp",
-            subdirectory: "Pets/banana"
-        ) else {
-            return nil
-        }
-        return UIImage(contentsOfFile: url.path)?.cgImage
-    }()
-
     private let spriteLayer = CALayer()
+    private var atlasKey: String?
+    private var columns = 8
+    private var rows = 9
 
     override init(frame: CGRect) {
         super.init(frame: frame)
         isUserInteractionEnabled = false
         backgroundColor = .clear
-        spriteLayer.contents = Self.atlasImage
         spriteLayer.contentsGravity = .resizeAspect
         spriteLayer.magnificationFilter = .linear
         spriteLayer.minificationFilter = .linear
@@ -366,14 +524,24 @@ private final class PetAtlasView: UIView {
         CATransaction.commit()
     }
 
-    func show(row: Int, column: Int) {
-        let safeRow = min(max(row, 0), Int(Self.rows) - 1)
-        let safeColumn = min(max(column, 0), Int(Self.columns) - 1)
+    func show(atlas: ActivePetAtlas, row: Int, column: Int) {
+        if atlasKey != atlas.key {
+            atlasKey = atlas.key
+            columns = max(atlas.columns, 1)
+            rows = max(atlas.rows, 1)
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            spriteLayer.contents = atlas.image
+            CATransaction.commit()
+        }
+
+        let safeRow = min(max(row, 0), rows - 1)
+        let safeColumn = min(max(column, 0), columns - 1)
         let contentsRect = CGRect(
-            x: CGFloat(safeColumn) / Self.columns,
-            y: CGFloat(safeRow) / Self.rows,
-            width: 1 / Self.columns,
-            height: 1 / Self.rows
+            x: CGFloat(safeColumn) / CGFloat(columns),
+            y: CGFloat(safeRow) / CGFloat(rows),
+            width: 1 / CGFloat(columns),
+            height: 1 / CGFloat(rows)
         )
         guard spriteLayer.contentsRect != contentsRect else { return }
 
@@ -388,7 +556,8 @@ private final class PetAtlasView: UIView {
     BrowserPetOverlay(
         browserStore: WorkspaceBrowserStore(),
         petStore: BrowserPetStore(),
-        aiStore: BrowserAIStore()
+        aiStore: BrowserAIStore(),
+        terminalStore: TerminalWorkspaceStore()
     )
     .environment(BrowserTheme())
     .frame(width: 390, height: 680)

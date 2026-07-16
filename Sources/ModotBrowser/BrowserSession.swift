@@ -22,6 +22,7 @@ final class BrowserSession: NSObject, WKNavigationDelegate, WKUIDelegate {
     private(set) var canGoForward = false
     private(set) var hasOnlySecureContent = true
     private(set) var readerStyleEnabled = false
+    private(set) var autoScrollEnabled = false
 
     @ObservationIgnored private let contentBlocker: BrowserContentBlocker
     @ObservationIgnored private let downloadManager: BrowserDownloadManager
@@ -29,6 +30,7 @@ final class BrowserSession: NSObject, WKNavigationDelegate, WKUIDelegate {
     @ObservationIgnored private let newWindowHandler: (URL?, WKWebViewConfiguration) -> WKWebView?
     @ObservationIgnored private let closeHandler: () -> Void
     @ObservationIgnored private var blockerInstalled = false
+    @ObservationIgnored private var autoScrollTask: Task<Void, Never>?
 
     init(
         workspaceID: UUID,
@@ -63,6 +65,16 @@ final class BrowserSession: NSObject, WKNavigationDelegate, WKUIDelegate {
         configuration.defaultWebpagePreferences.allowsContentJavaScript = initialSettings.javaScriptEnabled
         configuration.defaultWebpagePreferences.preferredContentMode = initialSettings.contentMode.webKitValue
         configuration.mediaTypesRequiringUserActionForPlayback = initialSettings.autoplayEnabled ? [] : .all
+
+        if webViewConfiguration == nil {
+            configuration.userContentController.addUserScript(
+                WKUserScript(
+                    source: Self.developerInstrumentationScript,
+                    injectionTime: .atDocumentStart,
+                    forMainFrameOnly: true
+                )
+            )
+        }
 
         if let ruleList = contentBlocker.ruleList {
             // A popup configuration can inherit the opener's content controller.
@@ -122,6 +134,55 @@ final class BrowserSession: NSObject, WKNavigationDelegate, WKUIDelegate {
         isLoading = false
     }
 
+    func toggleAutoScroll() {
+        setAutoScrollEnabled(!autoScrollEnabled)
+    }
+
+    func setAutoScrollEnabled(_ enabled: Bool) {
+        autoScrollTask?.cancel()
+        autoScrollTask = nil
+        autoScrollEnabled = enabled
+        guard enabled else { return }
+
+        autoScrollTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                let shouldContinue: Bool
+                do {
+                    guard let self else { return }
+                    shouldContinue = advanceAutoScroll()
+                }
+                guard shouldContinue else { return }
+                try? await Task.sleep(for: .milliseconds(50))
+            }
+        }
+    }
+
+    private func advanceAutoScroll() -> Bool {
+        let scrollView = webView.scrollView
+        guard !scrollView.isDragging, !scrollView.isDecelerating else { return true }
+
+        let minimumY = -scrollView.adjustedContentInset.top
+        let maximumY = max(
+            minimumY,
+            scrollView.contentSize.height
+                - scrollView.bounds.height
+                + scrollView.adjustedContentInset.bottom
+        )
+        let currentY = scrollView.contentOffset.y
+
+        guard currentY < maximumY - 0.5 else {
+            autoScrollEnabled = false
+            autoScrollTask = nil
+            return false
+        }
+
+        scrollView.setContentOffset(
+            CGPoint(x: scrollView.contentOffset.x, y: min(currentY + 1.25, maximumY)),
+            animated: false
+        )
+        return true
+    }
+
     func applyCurrentSiteSettings(reload: Bool = true) {
         applySiteSettings(for: currentURL ?? BrowserURL.resolve(address))
         if reload, hasLoaded { webView.reloadFromOrigin() }
@@ -138,6 +199,27 @@ final class BrowserSession: NSObject, WKNavigationDelegate, WKUIDelegate {
             errorMessage = error.localizedDescription
             return false
         }
+    }
+
+    func developerSnapshotJSON() async throws -> String {
+        let result = try await webView.evaluateJavaScript(Self.developerSnapshotScript)
+        guard let json = result as? String else { throw BrowserSessionError.developerSnapshotFailed }
+        return json
+    }
+
+    func runDeveloperScript(_ script: String) async throws -> String {
+        guard let result = try await webView.evaluateJavaScript(script) else { return "undefined" }
+        if let string = result as? String { return string }
+        if JSONSerialization.isValidJSONObject(result),
+           let data = try? JSONSerialization.data(withJSONObject: result, options: [.prettyPrinted, .sortedKeys]),
+           let json = String(data: data, encoding: .utf8) {
+            return json
+        }
+        return String(describing: result)
+    }
+
+    func clearDeveloperConsole() async throws {
+        _ = try await webView.evaluateJavaScript("window.__modotDevtools && (window.__modotDevtools.logs = [])")
     }
 
     func toggleReaderStyle() {
@@ -408,6 +490,69 @@ final class BrowserSession: NSObject, WKNavigationDelegate, WKUIDelegate {
             .appendingPathComponent("\(fileName)-\(Int(Date().timeIntervalSince1970)).\(fileExtension)")
     }
 
+    private static let developerInstrumentationScript = #"""
+    (() => {
+      if (window.__modotDevtools) return;
+      const state = { logs: [] };
+      const render = value => {
+        if (typeof value === 'string') return value;
+        if (value instanceof Error) return value.stack || value.message;
+        if (typeof value === 'undefined') return 'undefined';
+        if (typeof value === 'function') return value.toString();
+        try {
+          const seen = new WeakSet();
+          return JSON.stringify(value, (_key, nested) => {
+            if (typeof nested === 'bigint') return `${nested}n`;
+            if (nested && typeof nested === 'object') {
+              if (seen.has(nested)) return '[Circular]';
+              seen.add(nested);
+            }
+            return nested;
+          });
+        } catch (_) {
+          return String(value);
+        }
+      };
+      const push = (level, values) => {
+        state.logs.push({
+          level,
+          message: Array.from(values).map(render).join(' '),
+          timestamp: Date.now()
+        });
+        if (state.logs.length > 500) state.logs.splice(0, state.logs.length - 500);
+      };
+      for (const level of ['log', 'info', 'warn', 'error', 'debug']) {
+        const original = console[level]?.bind(console);
+        console[level] = (...values) => {
+          push(level, values);
+          if (original) original(...values);
+        };
+      }
+      window.addEventListener('error', event => {
+        push('error', [event.message, event.filename ? `(${event.filename}:${event.lineno})` : '']);
+      });
+      window.addEventListener('unhandledrejection', event => {
+        push('error', ['Unhandled promise rejection:', event.reason]);
+      });
+      window.__modotDevtools = state;
+    })();
+    """#
+
+    private static let developerSnapshotScript = #"""
+    (() => JSON.stringify({
+      url: location.href,
+      title: document.title,
+      dom: document.documentElement ? document.documentElement.outerHTML : '',
+      logs: (window.__modotDevtools && window.__modotDevtools.logs) || [],
+      resources: performance.getEntriesByType('resource').slice(-500).map(entry => ({
+        name: entry.name,
+        initiatorType: entry.initiatorType || 'other',
+        duration: entry.duration || 0,
+        transferSize: entry.transferSize || 0
+      }))
+    }))()
+    """#
+
     private static let enableReaderScript = #"""
     (() => {
       if (document.getElementById('modot-reader-style')) return true;
@@ -434,7 +579,14 @@ final class BrowserSession: NSObject, WKNavigationDelegate, WKUIDelegate {
 
 private enum BrowserSessionError: LocalizedError {
     case snapshotEncodingFailed
-    var errorDescription: String? { "The page snapshot could not be encoded." }
+    case developerSnapshotFailed
+
+    var errorDescription: String? {
+        switch self {
+        case .snapshotEncodingFailed: "The page snapshot could not be encoded."
+        case .developerSnapshotFailed: "The page did not return developer information."
+        }
+    }
 }
 
 private extension BrowserContentMode {

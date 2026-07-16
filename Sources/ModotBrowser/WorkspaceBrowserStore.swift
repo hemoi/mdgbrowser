@@ -13,7 +13,6 @@ final class WorkspaceBrowserStore {
     var bookmarks: [ServiceBookmark]
     var commandBarCollapsed: Bool
     var siteSettings: [SiteSettingsRecord]
-    var pageNotes: [PageNoteRecord]
     var autoArchiveAfterDays: Int
 
     var activePane: BrowserPane = .primary
@@ -23,6 +22,8 @@ final class WorkspaceBrowserStore {
     var sharePayload: SharePayload?
     var toastMessage: String?
     var webViewRevision = 0
+    var tabDragState: TabDragState?
+    var panePlacementPromptTabID: UUID?
 
     @ObservationIgnored let statusMonitor: ServiceStatusMonitor
     @ObservationIgnored let downloadManager: BrowserDownloadManager
@@ -54,7 +55,6 @@ final class WorkspaceBrowserStore {
             bookmarks = snapshot.bookmarks
             commandBarCollapsed = snapshot.commandBarCollapsed
             siteSettings = snapshot.siteSettings
-            pageNotes = snapshot.pageNotes
             autoArchiveAfterDays = snapshot.autoArchiveAfterDays
         } else {
             let workspace = BrowserWorkspace.fresh(name: "Main")
@@ -64,7 +64,6 @@ final class WorkspaceBrowserStore {
             bookmarks = []
             commandBarCollapsed = false
             siteSettings = []
-            pageNotes = []
             autoArchiveAfterDays = 14
         }
 
@@ -92,7 +91,8 @@ final class WorkspaceBrowserStore {
         }
     }
 
-    var pinnedBookmarks: [ServiceBookmark] { bookmarks.filter(\.isPinned) }
+    var visibleBookmarks: [ServiceBookmark] { bookmarks.filter { $0.isVisible(in: activeWorkspaceID) } }
+    var pinnedBookmarks: [ServiceBookmark] { visibleBookmarks.filter(\.isPinned) }
     var canDeleteActiveWorkspace: Bool { workspaces.count > 1 }
     var recentlyClosedTabs: [StoredTabRecord] { activeWorkspace.recentlyClosedTabs }
     var archivedTabs: [StoredTabRecord] { activeWorkspace.archivedTabs }
@@ -109,11 +109,6 @@ final class WorkspaceBrowserStore {
         let tab = selectedTab(for: activePane)
         let liveTitle = sessions[tab.id]?.title.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return liveTitle.isEmpty ? tab.title : liveTitle
-    }
-
-    var currentPageNote: PageNoteRecord? {
-        let key = currentPageKey
-        return pageNotes.first(where: { $0.workspaceID == activeWorkspaceID && $0.pageKey == key })
     }
 
     func selectedTabID(for pane: BrowserPane) -> UUID {
@@ -228,9 +223,16 @@ final class WorkspaceBrowserStore {
         updateActiveWorkspace { $0.archivedTabs.removeAll(where: { $0.id == storedID }) }
     }
 
+    /// The pane currently displaying the tab, if any.
+    func paneShowing(_ tabID: UUID) -> BrowserPane? {
+        if selectedTabID(for: .primary) == tabID { return .primary }
+        if activeWorkspace.splitEnabled, selectedTabID(for: .secondary) == tabID { return .secondary }
+        return nil
+    }
+
     func selectTab(_ tabID: UUID, for pane: BrowserPane? = nil) {
-        let targetPane = pane ?? activePane
         guard activeWorkspace.tabs.contains(where: { $0.id == tabID }) else { return }
+        let targetPane = pane ?? implicitTargetPane(for: tabID)
         updateActiveWorkspace { workspace in
             setSelectedTab(tabID, for: targetPane, in: &workspace)
             if let index = workspace.tabs.firstIndex(where: { $0.id == tabID }) {
@@ -239,6 +241,97 @@ final class WorkspaceBrowserStore {
         }
         activePane = targetPane
         hibernateOverflowSessions()
+    }
+
+    /// Tab strip tap behavior. In split view a visible tab focuses its pane, a
+    /// tab with a remembered side returns to that side, and an unplaced tab
+    /// asks where it should go via the L/R chooser.
+    func handleTabTap(_ tabID: UUID) {
+        guard activeWorkspace.tabs.contains(where: { $0.id == tabID }) else { return }
+        guard activeWorkspace.splitEnabled else {
+            panePlacementPromptTabID = nil
+            selectTab(tabID)
+            return
+        }
+        if let visiblePane = paneShowing(tabID) {
+            panePlacementPromptTabID = nil
+            setActivePane(visiblePane)
+        } else if let preferred = tabRecord(tabID)?.preferredPane {
+            panePlacementPromptTabID = nil
+            selectTab(tabID, for: preferred)
+        } else {
+            panePlacementPromptTabID = panePlacementPromptTabID == tabID ? nil : tabID
+        }
+    }
+
+    /// Places a tab into a specific pane, enabling split view when needed.
+    /// Dropping on the left/top edge keeps the current page on the other
+    /// side, and vice versa. Passing an axis switches between the
+    /// side-by-side and stacked layouts.
+    func placeTab(_ tabID: UUID, in pane: BrowserPane, axis: BrowserSplitAxis? = nil) {
+        guard activeWorkspace.tabs.contains(where: { $0.id == tabID }) else { return }
+        panePlacementPromptTabID = nil
+        updateActiveWorkspace { workspace in
+            if let axis { workspace.splitAxis = axis }
+            if workspace.splitEnabled {
+                setSelectedTab(tabID, for: pane, in: &workspace)
+            } else {
+                let currentTabID = workspace.primaryTabID
+                var companionID = currentTabID
+                if currentTabID == tabID {
+                    if let other = workspace.tabs.first(where: { $0.id != tabID }) {
+                        companionID = other.id
+                    } else {
+                        let tab = BrowserTabRecord.start()
+                        workspace.tabs.append(tab)
+                        companionID = tab.id
+                    }
+                }
+                workspace.primaryTabID = pane == .primary ? tabID : companionID
+                workspace.secondaryTabID = pane == .primary ? companionID : tabID
+                workspace.splitEnabled = true
+            }
+            rememberPanePlacements(in: &workspace)
+            if let index = workspace.tabs.firstIndex(where: { $0.id == tabID }) {
+                workspace.tabs[index].lastAccessedAt = .now
+            }
+        }
+        activePane = pane
+        hibernateOverflowSessions()
+    }
+
+    func beginTabDrag(_ tabID: UUID, at location: CGPoint? = nil) {
+        guard activeWorkspace.tabs.contains(where: { $0.id == tabID }) else { return }
+        panePlacementPromptTabID = nil
+        tabDragState = TabDragState(tabID: tabID, location: location, target: nil)
+        TabDragHaptics.dragBegan()
+    }
+
+    func updateTabDrag(location: CGPoint) {
+        tabDragState?.location = location
+    }
+
+    func updateTabDragTarget(_ target: TabDragTarget?) {
+        guard tabDragState != nil, tabDragState?.target != target else { return }
+        tabDragState?.target = target
+        if target != nil { TabDragHaptics.targetChanged() }
+    }
+
+    func finishTabDrag() {
+        guard let state = tabDragState else { return }
+        tabDragState = nil
+        switch state.target {
+        case .tab(let hoveredID):
+            selectTab(hoveredID)
+        case .split(let placement):
+            placeTab(state.tabID, in: placement.pane, axis: placement.axis)
+        case nil:
+            break
+        }
+    }
+
+    func cancelTabDrag() {
+        tabDragState = nil
     }
 
     func toggleTabPin(_ tabID: UUID) {
@@ -298,7 +391,8 @@ final class WorkspaceBrowserStore {
                 activePane = .primary
                 return
             }
-            if let existing = workspace.tabs.first(where: { $0.id != workspace.primaryTabID }) {
+            let candidates = workspace.tabs.filter { $0.id != workspace.primaryTabID }
+            if let existing = candidates.first(where: { $0.preferredPane == .secondary }) ?? candidates.first {
                 workspace.secondaryTabID = existing.id
             } else {
                 let tab = BrowserTabRecord.start()
@@ -306,13 +400,20 @@ final class WorkspaceBrowserStore {
                 workspace.secondaryTabID = tab.id
             }
             workspace.splitEnabled = true
+            rememberPanePlacements(in: &workspace)
             activePane = .secondary
         }
     }
 
-    func setSplitRatio(_ ratio: Double) {
-        updateActiveWorkspace { $0.splitRatio = min(max(ratio, 0.25), 0.75) }
+    func setSplitRatio(_ ratio: Double, persistImmediately: Bool = true) {
+        let clamped = min(max(ratio, 0.25), 0.75)
+        let index = activeWorkspaceIndex
+        guard workspaces[index].splitRatio != clamped else { return }
+        workspaces[index].splitRatio = clamped
+        if persistImmediately { persist() }
     }
+
+    func persistSplitRatio() { persist() }
 
     func open(_ url: URL, in pane: BrowserPane? = nil) {
         let targetPane = pane ?? activePane
@@ -406,28 +507,6 @@ final class WorkspaceBrowserStore {
         }
     }
 
-    func saveCurrentPageNote(_ text: String) {
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        let key = currentPageKey
-        if let index = pageNotes.firstIndex(where: { $0.workspaceID == activeWorkspaceID && $0.pageKey == key }) {
-            if trimmed.isEmpty {
-                pageNotes.remove(at: index)
-            } else {
-                pageNotes[index].text = text
-                pageNotes[index].pageTitle = currentPageTitle
-                pageNotes[index].modifiedAt = .now
-            }
-        } else if !trimmed.isEmpty {
-            pageNotes.append(
-                PageNoteRecord(
-                    id: UUID(), workspaceID: activeWorkspaceID, pageKey: key,
-                    pageTitle: currentPageTitle, text: text, modifiedAt: .now
-                )
-            )
-        }
-        persist()
-    }
-
     func isBookmarked(_ url: URL?) -> Bool {
         guard let url else { return false }
         return bookmarks.contains(where: { $0.url?.absoluteString == url.absoluteString })
@@ -443,20 +522,31 @@ final class WorkspaceBrowserStore {
             return
         }
         let title = session.title.isEmpty ? (url.host() ?? "Service") : session.title
-        addBookmark(title: title, urlString: url.absoluteString, groupID: groups.first?.id, isPinned: true)
+        addBookmark(
+            title: title, urlString: url.absoluteString, groupID: groups.first?.id,
+            isPinned: true, workspaceID: activeWorkspaceID
+        )
+        toastMessage = "Bookmarked in \(activeWorkspace.name)"
     }
 
-    func addBookmark(title: String, urlString: String, groupID: UUID?, isPinned: Bool) {
+    func addBookmark(title: String, urlString: String, groupID: UUID?, isPinned: Bool, workspaceID: UUID? = nil) {
         guard let url = BrowserURL.resolve(urlString) else { return }
         let normalizedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
         bookmarks.append(
             ServiceBookmark(
                 id: UUID(), title: normalizedTitle.isEmpty ? (url.host() ?? "Service") : normalizedTitle,
-                urlString: url.absoluteString, groupID: groupID, isPinned: isPinned
+                urlString: url.absoluteString, groupID: groupID, isPinned: isPinned,
+                workspaceID: workspaceID
             )
         )
         persist()
         refreshServiceStatuses()
+    }
+
+    func assignBookmark(_ bookmarkID: UUID, toWorkspace workspaceID: UUID?) {
+        guard let index = bookmarks.firstIndex(where: { $0.id == bookmarkID }) else { return }
+        bookmarks[index].workspaceID = workspaceID
+        persist()
     }
 
     func removeBookmark(_ bookmarkID: UUID) {
@@ -528,6 +618,8 @@ final class WorkspaceBrowserStore {
         syncAllSessionsIntoModel()
         activeWorkspaceID = workspaceID
         activePane = .primary
+        panePlacementPromptTabID = nil
+        tabDragState = nil
         sessions.removeAll()
         persist()
     }
@@ -539,7 +631,7 @@ final class WorkspaceBrowserStore {
         workspaces.remove(at: index)
         removedTabIDs.forEach { sessions.removeValue(forKey: $0) }
         siteSettings.removeAll(where: { $0.workspaceID == workspaceID })
-        pageNotes.removeAll(where: { $0.workspaceID == workspaceID })
+        bookmarks.removeAll(where: { $0.workspaceID == workspaceID })
         if activeWorkspaceID == workspaceID {
             activeWorkspaceID = workspaces[0].id
             activePane = .primary
@@ -567,13 +659,6 @@ final class WorkspaceBrowserStore {
 
     private var activeWorkspaceIndex: Int {
         workspaces.firstIndex(where: { $0.id == activeWorkspaceID }) ?? 0
-    }
-
-    private var currentPageKey: String {
-        guard let url = currentPageURL else { return "start" }
-        var components = URLComponents(url: url, resolvingAgainstBaseURL: false)
-        components?.fragment = nil
-        return components?.url?.absoluteString ?? url.absoluteString
     }
 
     private func workspaceID(containing tabID: UUID) -> UUID? {
@@ -664,6 +749,34 @@ final class WorkspaceBrowserStore {
         }
         if pane == .primary { workspace.primaryTabID = tabID }
         else { workspace.secondaryTabID = tabID }
+        if workspace.splitEnabled {
+            rememberPanePlacements(in: &workspace)
+        }
+    }
+
+    /// Records which side each visible tab occupies so a tab that was once on
+    /// the left keeps returning to the left.
+    private func rememberPanePlacements(in workspace: inout BrowserWorkspace) {
+        if let index = workspace.tabs.firstIndex(where: { $0.id == workspace.primaryTabID }) {
+            workspace.tabs[index].preferredPane = .primary
+        }
+        if let secondaryID = workspace.secondaryTabID,
+           let index = workspace.tabs.firstIndex(where: { $0.id == secondaryID }) {
+            workspace.tabs[index].preferredPane = .secondary
+        }
+    }
+
+    private func tabRecord(_ tabID: UUID) -> BrowserTabRecord? {
+        activeWorkspace.tabs.first(where: { $0.id == tabID })
+    }
+
+    /// Where a selection without an explicit pane should land: the remembered
+    /// side in split view, otherwise the focused pane.
+    private func implicitTargetPane(for tabID: UUID) -> BrowserPane {
+        guard activeWorkspace.splitEnabled else { return .primary }
+        if let visiblePane = paneShowing(tabID) { return visiblePane }
+        if let preferred = tabRecord(tabID)?.preferredPane { return preferred }
+        return activePane
     }
 
     private func removeTab(
@@ -671,6 +784,8 @@ final class WorkspaceBrowserStore {
         replacementIfNeeded: Bool,
         beforeRemoval: (inout BrowserWorkspace) -> Void
     ) {
+        if panePlacementPromptTabID == tabID { panePlacementPromptTabID = nil }
+        if tabDragState?.tabID == tabID { tabDragState = nil }
         updateActiveWorkspace { workspace in
             beforeRemoval(&workspace)
             workspace.tabs.removeAll(where: { $0.id == tabID })
@@ -681,9 +796,16 @@ final class WorkspaceBrowserStore {
             if workspace.primaryTabID == tabID, let fallback { workspace.primaryTabID = fallback }
             if workspace.secondaryTabID == tabID {
                 workspace.secondaryTabID = workspace.tabs.first(where: { $0.id != workspace.primaryTabID })?.id
-                    ?? workspace.primaryTabID
+            }
+            // Both panes hosting the same tab would hand one WKWebView to two
+            // view hosts, which re-parent it every layout pass and shake the
+            // whole canvas. Close the split instead.
+            if workspace.splitEnabled, workspace.secondaryTabID == nil || workspace.secondaryTabID == workspace.primaryTabID {
+                workspace.splitEnabled = false
+                workspace.secondaryTabID = nil
             }
         }
+        if !activeWorkspace.splitEnabled { activePane = .primary }
         sessions.removeValue(forKey: tabID)
     }
 
@@ -740,6 +862,13 @@ final class WorkspaceBrowserStore {
                 workspaces[index].secondaryTabID = nil
                 workspaces[index].splitEnabled = false
             }
+            // A split whose panes share one tab would mount the same
+            // WKWebView twice; recover by disabling the split.
+            if workspaces[index].splitEnabled,
+               workspaces[index].secondaryTabID == nil || workspaces[index].secondaryTabID == workspaces[index].primaryTabID {
+                workspaces[index].secondaryTabID = nil
+                workspaces[index].splitEnabled = false
+            }
             let stackIDs = Set(workspaces[index].tabStacks.map(\.id))
             for tabIndex in workspaces[index].tabs.indices
             where workspaces[index].tabs[tabIndex].stackID.map({ !stackIDs.contains($0) }) ?? false {
@@ -757,7 +886,6 @@ final class WorkspaceBrowserStore {
             bookmarks: bookmarks,
             commandBarCollapsed: commandBarCollapsed,
             siteSettings: siteSettings,
-            pageNotes: pageNotes,
             autoArchiveAfterDays: autoArchiveAfterDays
         )
         guard let data = try? JSONEncoder().encode(snapshot) else { return }

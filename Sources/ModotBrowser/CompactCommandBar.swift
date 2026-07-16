@@ -9,14 +9,22 @@ struct CompactCommandBar: View {
     let aiStore: BrowserAIStore
 
     var body: some View {
-        Group {
-            if store.commandBarCollapsed {
-                collapsedBar
-            } else if horizontalSizeClass == .compact {
-                compactExpandedBar
-            } else {
-                regularExpandedBar
+        VStack(spacing: 0) {
+            Group {
+                if store.commandBarCollapsed {
+                    collapsedBar
+                } else {
+                    expandedBar
+                }
             }
+            .frame(height: 28)
+
+            Rectangle()
+                .fill(theme.border)
+                .frame(height: 0.5)
+
+            bookmarkBar
+                .frame(height: 19.5)
         }
         .frame(height: barHeight)
         .background(theme.background)
@@ -28,167 +36,142 @@ struct CompactCommandBar: View {
     }
 
     private var collapsedBar: some View {
-        HStack(spacing: 4) {
-            CompactIconButton(systemName: "line.3.horizontal", accessibilityLabel: "Open sidebar") {
+        HStack(spacing: 2) {
+            AppBarIconButton(systemName: "line.3.horizontal", accessibilityLabel: "Open sidebar") {
                 store.sidebarVisible = true
             }
 
             Text(store.activeWorkspace.name)
-                .font(.system(size: 12, weight: .semibold))
+                .font(.system(size: 10, weight: .semibold))
                 .lineLimit(1)
 
             Text("\(store.activeWorkspace.tabs.count)")
-                .font(.system(size: 10, weight: .bold, design: .rounded))
+                .font(.system(size: 8, weight: .bold, design: .rounded))
                 .foregroundStyle(theme.mutedLabel)
 
             Spacer(minLength: 4)
 
-            CompactIconButton(systemName: "command", accessibilityLabel: "Open command palette") {
+            AppBarIconButton(systemName: "command", accessibilityLabel: "Open command palette") {
                 store.commandPalettePresented = true
             }
-
-            terminalControl
 
             if store.activeWorkspace.splitEnabled {
                 PaneFocusControl(store: store)
             }
 
-            CompactIconButton(systemName: "chevron.down", accessibilityLabel: "Expand command bar") {
+            AppBarIconButton(systemName: "chevron.down", accessibilityLabel: "Expand command bar") {
                 store.toggleCommandBar()
             }
         }
-        .padding(.horizontal, 6)
+        .padding(.horizontal, 4)
     }
 
-    private var regularExpandedBar: some View {
-        ScrollView(.horizontal) {
-            HStack(spacing: 4) {
-                CompactIconButton(systemName: "line.3.horizontal", accessibilityLabel: "Open sidebar") {
-                    store.sidebarVisible = true
-                }
-
-                workspaceMenu
-
-                barDivider
-                TabStrip(store: store)
-
-                CompactIconButton(systemName: "plus", accessibilityLabel: "New tab") {
-                    store.addTab()
-                }
-
-                barDivider
-                CompactNavigationControl(store: store)
-                CompactAddressField(store: store, terminalStore: terminalStore)
-
-                privacyShield
-                pageNoteControl
-                aiControl
-                featureMenu
-                terminalControl
-
-                bookmarkControl
-                pinnedBookmarks
-                allBookmarksMenu
-
-                barDivider
-
-                if store.activeWorkspace.splitEnabled {
-                    PaneFocusControl(store: store)
-                }
-
-                CompactIconButton(
-                    systemName: "rectangle.split.2x1",
-                    accessibilityLabel: store.activeWorkspace.splitEnabled ? "Close split view" : "Open split view",
-                    selected: store.activeWorkspace.splitEnabled
-                ) {
-                    store.toggleSplit()
-                }
-
-                CompactIconButton(systemName: "chevron.up", accessibilityLabel: "Collapse command bar") {
-                    store.toggleCommandBar()
-                }
+    private var expandedBar: some View {
+        HStack(spacing: horizontalSizeClass == .compact ? 2 : 3) {
+            AppBarIconButton(systemName: "line.3.horizontal", accessibilityLabel: "Open sidebar") {
+                store.sidebarVisible = true
             }
-            .padding(.horizontal, 6)
-        }
-        .scrollIndicators(.hidden)
-    }
+            .accessibilityIdentifier("browser.sidebar.open")
 
-    private var compactExpandedBar: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 4) {
-                CompactIconButton(systemName: "line.3.horizontal", accessibilityLabel: "Open sidebar") {
-                    store.sidebarVisible = true
-                }
-                .accessibilityIdentifier("browser.sidebar.open")
+            CompactAddressField(
+                store: store,
+                terminalStore: terminalStore,
+                fillsAvailableWidth: true
+            )
 
-                workspaceMenu
+            CompactNavigationControl(store: store)
 
-                ScrollView(.horizontal) {
-                    TabStrip(store: store)
-                }
-                .scrollIndicators(.hidden)
-                .frame(maxWidth: .infinity)
-
-                CompactIconButton(systemName: "plus", accessibilityLabel: "New tab") {
-                    store.addTab()
-                }
-
-                terminalControl
+            AppBarIconButton(systemName: "plus", accessibilityLabel: "New tab") {
+                store.addTab()
             }
-            .padding(.horizontal, 6)
-            .frame(height: 38)
 
-            HStack(spacing: 4) {
-                CompactNavigationControl(store: store)
-                CompactAddressField(
-                    store: store,
-                    terminalStore: terminalStore,
-                    fillsAvailableWidth: true
-                )
-                bookmarkControl
-                aiControl
-                featureMenu
-            }
-            .padding(.horizontal, 6)
-            .frame(height: 38)
+            aiControl
+            hamburgerMenu
         }
-    }
-
-    private var terminalControl: some View {
-        CompactIconButton(
-            systemName: terminalStore.presentedSurface == nil ? "terminal" : "terminal.fill",
-            accessibilityLabel: terminalStore.presentedSurface == nil ? "Open SSH terminal" : "Hide SSH terminal",
-            selected: terminalStore.presentedSurface != nil
-        ) {
-            terminalStore.toggleSurface()
-        }
-        .accessibilityIdentifier("browser.ssh.open")
+        .padding(.horizontal, 4)
     }
 
     private var barHeight: CGFloat {
-        if store.commandBarCollapsed { return 40 }
-        return horizontalSizeClass == .compact ? 76 : 44
+        48
+    }
+
+    private var bookmarkBar: some View {
+        HStack(spacing: 0) {
+            AppBarIconButton(
+                systemName: store.isBookmarked(store.currentPageURL) ? "star.fill" : "star",
+                accessibilityLabel: store.isBookmarked(store.currentPageURL) ? "Remove bookmark" : "Bookmark this page"
+            ) {
+                store.quickToggleBookmark()
+            }
+
+            Rectangle()
+                .fill(theme.border)
+                .frame(width: 0.5, height: 12)
+
+            ScrollView(.horizontal) {
+                HStack(spacing: 12) {
+                    if store.pinnedBookmarks.isEmpty {
+                        Text("BOOKMARKS")
+                            .font(.system(size: 8, weight: .semibold))
+                            .tracking(0.5)
+                            .foregroundStyle(theme.mutedLabel)
+                    } else {
+                        ForEach(store.pinnedBookmarks) { bookmark in
+                            Button {
+                                store.openBookmark(bookmark.id)
+                            } label: {
+                                HStack(spacing: 4) {
+                                    Circle()
+                                        .fill(bookmarkStatusColor(bookmark.id))
+                                        .frame(width: 4, height: 4)
+                                    Text(bookmark.title)
+                                        .font(.system(size: 9))
+                                        .lineLimit(1)
+                                }
+                                .foregroundStyle(theme.label)
+                            }
+                            .buttonStyle(.plain)
+                            .contextMenu {
+                                Button("Unpin bookmark", systemImage: "pin.slash") {
+                                    store.toggleBookmarkPin(bookmark.id)
+                                }
+                                Button("Delete bookmark", systemImage: "trash", role: .destructive) {
+                                    store.removeBookmark(bookmark.id)
+                                }
+                            }
+                        }
+                    }
+                }
+                .padding(.horizontal, 8)
+            }
+            .scrollIndicators(.hidden)
+            .frame(maxWidth: .infinity)
+
+            Menu {
+                bookmarkMenuItems
+            } label: {
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 8, weight: .bold))
+                    .foregroundStyle(theme.mutedLabel)
+                    .frame(width: 24, height: 19)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("All bookmarks")
+        }
+    }
+
+    private func bookmarkStatusColor(_ bookmarkID: UUID) -> Color {
+        switch store.statusMonitor.state(for: bookmarkID) {
+        case .online: .green
+        case .offline: .red
+        case .checking: .orange
+        case .idle: theme.mutedLabel.opacity(0.5)
+        }
     }
 
     private var workspaceMenu: some View {
         Menu {
-            ForEach(store.workspaces) { workspace in
-                Button {
-                    store.selectWorkspace(workspace.id)
-                } label: {
-                    if workspace.id == store.activeWorkspaceID {
-                        Label(workspace.name, systemImage: "checkmark")
-                    } else {
-                        Text(workspace.name)
-                    }
-                }
-            }
-
-            Divider()
-
-            Button("New workspace", systemImage: "plus") {
-                store.presentedSheet = .addWorkspace
-            }
+            workspaceMenuItems
         } label: {
             HStack(spacing: 4) {
                 Text(store.activeWorkspace.name)
@@ -205,52 +188,29 @@ struct CompactCommandBar: View {
         .buttonStyle(.plain)
     }
 
-    private var bookmarkControl: some View {
-        let session = store.session(for: store.activePane)
-        return CompactIconButton(
-            systemName: store.isBookmarked(session.currentURL) ? "star.fill" : "star",
-            accessibilityLabel: "Toggle bookmark",
-            selected: store.isBookmarked(session.currentURL),
-            disabled: session.currentURL == nil
-        ) {
-            store.quickToggleBookmark()
-        }
-        .contextMenu {
-            if let url = session.currentURL {
-                Button("Add with details", systemImage: "slider.horizontal.3") {
-                    store.presentedSheet = .addBookmark(
-                        title: session.title,
-                        url: url.absoluteString
-                    )
+    @ViewBuilder
+    private var workspaceMenuItems: some View {
+        ForEach(store.workspaces) { workspace in
+            Button {
+                store.selectWorkspace(workspace.id)
+            } label: {
+                if workspace.id == store.activeWorkspaceID {
+                    Label(workspace.name, systemImage: "checkmark")
+                } else {
+                    Text(workspace.name)
                 }
             }
         }
-    }
 
-    private var privacyShield: some View {
-        let settings = store.settings(for: store.currentPageURL)
-        return CompactIconButton(
-            systemName: settings.blockerEnabled ? "shield.lefthalf.filled" : "shield.slash",
-            accessibilityLabel: "Site privacy settings",
-            selected: settings.blockerEnabled,
-            disabled: store.currentPageURL == nil
-        ) {
-            store.presentedSheet = .siteSettings
-        }
-    }
+        Divider()
 
-    private var pageNoteControl: some View {
-        CompactIconButton(
-            systemName: store.currentPageNote == nil ? "note.text" : "note.text.badge.plus",
-            accessibilityLabel: "Page note",
-            selected: store.currentPageNote != nil
-        ) {
-            store.presentedSheet = .pageNote
+        Button("New workspace", systemImage: "plus") {
+            store.presentedSheet = .addWorkspace
         }
     }
 
     private var aiControl: some View {
-        CompactIconButton(
+        AppBarIconButton(
             systemName: aiStore.isPresented ? "sparkles.rectangle.stack.fill" : "sparkles.rectangle.stack",
             accessibilityLabel: aiStore.isPresented ? "Hide AI assistant" : "Open AI assistant",
             selected: aiStore.isPresented
@@ -264,193 +224,203 @@ struct CompactCommandBar: View {
         .accessibilityIdentifier("browser.ai.open")
     }
 
-    private var featureMenu: some View {
-        Menu {
-            Button("Command palette", systemImage: "command") { store.commandPalettePresented = true }
-            Button("AI assistant", systemImage: "sparkles.rectangle.stack") { aiStore.present() }
-            Button("AI settings", systemImage: "sparkles") { aiStore.settingsPresented = true }
-            Button("Page tools", systemImage: "wrench.and.screwdriver") { store.presentedSheet = .pageTools }
-            Button("Site settings", systemImage: "switch.2") { store.presentedSheet = .siteSettings }
-            Button("Page note", systemImage: "note.text") { store.presentedSheet = .pageNote }
-            Divider()
-            Button("Reopen closed tab", systemImage: "clock.arrow.circlepath") { store.reopenLastClosedTab() }
-                .disabled(store.recentlyClosedTabs.isEmpty)
-            Button("Archive current tab", systemImage: "archivebox") {
-                store.archiveTab(store.selectedTabID(for: store.activePane))
-            }
-            Button("Tab history", systemImage: "tray.full") { store.presentedSheet = .tabArchive }
-            Button("New tab stack", systemImage: "square.stack.3d.up") { store.presentedSheet = .createTabStack }
-            Divider()
-            Button("Downloads", systemImage: "arrow.down.circle") { store.presentedSheet = .downloads }
-            Button("Refresh service status", systemImage: "wave.3.right") { store.refreshServiceStatuses() }
-        } label: {
-            Image(systemName: "ellipsis.circle")
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(theme.label)
-                .frame(width: 36, height: 36)
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel("Browser tools")
-    }
+    // Everything that used to crowd the bar lives here now.
+    private var hamburgerMenu: some View {
+        let session = store.session(for: store.activePane)
+        let currentTabID = store.selectedTabID(for: store.activePane)
+        let currentTab = store.selectedTab(for: store.activePane)
 
-    @ViewBuilder
-    private var pinnedBookmarks: some View {
-        ForEach(store.pinnedBookmarks.prefix(4)) { bookmark in
-            Button {
-                store.openBookmark(bookmark.id)
-            } label: {
-                HStack(spacing: 4) {
-                    Circle()
-                        .fill(theme.tailnet)
-                        .frame(width: 5, height: 5)
-                    Text(bookmark.title)
-                        .lineLimit(1)
+        return Menu {
+            Section {
+                Button {
+                    store.quickToggleBookmark()
+                } label: {
+                    if store.isBookmarked(session.currentURL) {
+                        Label("Remove bookmark", systemImage: "star.fill")
+                    } else {
+                        Label("Bookmark this page", systemImage: "star")
+                    }
                 }
-                .font(.system(size: 11, weight: .medium))
-                .foregroundStyle(theme.label)
-                .padding(.horizontal, 8)
-                .frame(height: 28)
-                .overlay {
-                    RoundedRectangle(cornerRadius: 7)
-                        .stroke(theme.border, lineWidth: 0.75)
-                }
-            }
-            .buttonStyle(.plain)
-        }
-    }
+                .disabled(session.currentURL == nil)
 
-    private var allBookmarksMenu: some View {
-        Menu {
-            if store.bookmarks.isEmpty {
-                Text("No bookmarks")
-            } else {
-                ForEach(store.groups) { group in
-                    let groupBookmarks = store.bookmarks.filter { $0.groupID == group.id }
-                    if !groupBookmarks.isEmpty {
-                        Section(group.name) {
-                            ForEach(groupBookmarks) { bookmark in
-                                Button(bookmark.title) { store.openBookmark(bookmark.id) }
-                            }
-                        }
+                Button("Bookmark with details…", systemImage: "slider.horizontal.3") {
+                    store.presentedSheet = .addBookmark(
+                        title: session.title,
+                        url: session.currentURL?.absoluteString ?? ""
+                    )
+                }
+                .disabled(session.currentURL == nil)
+
+                bookmarksSubmenu
+            }
+
+            Section {
+                Button(
+                    store.activeWorkspace.splitEnabled ? "Close split view" : "Split view",
+                    systemImage: "rectangle.split.2x1"
+                ) {
+                    store.toggleSplit()
+                }
+
+                Button(
+                    terminalStore.presentedSurface == nil ? "SSH terminal" : "Hide SSH terminal",
+                    systemImage: "terminal"
+                ) {
+                    terminalStore.toggleSurface()
+                }
+
+                Button("Command palette", systemImage: "command") { store.commandPalettePresented = true }
+            }
+
+            Section("Current tab") {
+                Button(currentTab.isPinned ? "Unpin tab" : "Pin tab", systemImage: "pin") {
+                    store.toggleTabPin(currentTabID)
+                }
+
+                Menu("Move to group") {
+                    Button("None") { store.assignTab(currentTabID, to: nil) }
+                    ForEach(store.groups) { group in
+                        Button(group.name) { store.assignTab(currentTabID, to: group.id) }
                     }
                 }
 
-                let ungrouped = store.bookmarks.filter { $0.groupID == nil }
-                if !ungrouped.isEmpty {
-                    Section("Other") {
-                        ForEach(ungrouped) { bookmark in
+                Menu("Move to stack") {
+                    Button("None") { store.assignTab(currentTabID, toStack: nil) }
+                    ForEach(store.activeWorkspace.tabStacks) { stack in
+                        Button(stack.name) { store.assignTab(currentTabID, toStack: stack.id) }
+                    }
+                    Divider()
+                    Button("New stack…") { store.presentedSheet = .createTabStack }
+                }
+
+                Button("Archive tab", systemImage: "archivebox") {
+                    store.archiveTab(currentTabID)
+                }
+
+                Button("Close tab", systemImage: "xmark", role: .destructive) {
+                    store.closeTab(currentTabID)
+                }
+            }
+
+            Section {
+                Menu {
+                    workspaceMenuItems
+                } label: {
+                    Label("Workspace · \(store.activeWorkspace.name)", systemImage: "square.grid.2x2")
+                }
+
+                Button("Services sidebar", systemImage: "sidebar.left") { store.sidebarVisible = true }
+            }
+
+            Section {
+                Button("Site settings", systemImage: "shield.lefthalf.filled") { store.presentedSheet = .siteSettings }
+                Button("Page tools", systemImage: "wrench.and.screwdriver") { store.presentedSheet = .pageTools }
+                Button("Developer tools", systemImage: "chevron.left.forwardslash.chevron.right") {
+                    store.presentedSheet = .developerTools
+                }
+                Button("Reopen closed tab", systemImage: "clock.arrow.circlepath") { store.reopenLastClosedTab() }
+                    .disabled(store.recentlyClosedTabs.isEmpty)
+                Button("Tab history", systemImage: "tray.full") { store.presentedSheet = .tabArchive }
+                Button("Downloads", systemImage: "arrow.down.circle") { store.presentedSheet = .downloads }
+                Button("AI settings", systemImage: "sparkles") { aiStore.settingsPresented = true }
+                Button("Refresh service status", systemImage: "wave.3.right") { store.refreshServiceStatuses() }
+            }
+        } label: {
+            Image(systemName: "line.3.horizontal")
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(theme.label)
+                .frame(width: 26, height: 26)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Browser menu")
+        .accessibilityIdentifier("browser.menu")
+    }
+
+    private var bookmarksSubmenu: some View {
+        Menu {
+            bookmarkMenuItems
+        } label: {
+            Label("Bookmarks", systemImage: "bookmark")
+        }
+    }
+
+    @ViewBuilder
+    private var bookmarkMenuItems: some View {
+        if store.visibleBookmarks.isEmpty {
+            Text("No bookmarks")
+        } else {
+            ForEach(store.groups) { group in
+                let groupBookmarks = store.visibleBookmarks.filter { $0.groupID == group.id }
+                if !groupBookmarks.isEmpty {
+                    Section(group.name) {
+                        ForEach(groupBookmarks) { bookmark in
                             Button(bookmark.title) { store.openBookmark(bookmark.id) }
                         }
                     }
                 }
             }
 
-            Divider()
-
-            Button("Manage in sidebar", systemImage: "sidebar.left") {
-                store.sidebarVisible = true
+            let ungrouped = store.visibleBookmarks.filter { $0.groupID == nil }
+            if !ungrouped.isEmpty {
+                Section("Other") {
+                    ForEach(ungrouped) { bookmark in
+                        Button(bookmark.title) { store.openBookmark(bookmark.id) }
+                    }
+                }
             }
-        } label: {
-            Image(systemName: "bookmark")
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(theme.label)
-                .frame(width: 36, height: 36)
         }
-        .buttonStyle(.plain)
-        .accessibilityLabel("All bookmarks")
-    }
 
-    private var barDivider: some View {
-        Rectangle()
-            .fill(theme.border)
-            .frame(width: 0.5, height: 18)
-            .padding(.horizontal, 2)
+        Divider()
+
+        Button("Manage in sidebar", systemImage: "sidebar.left") {
+            store.sidebarVisible = true
+        }
     }
 }
 
-private struct TabStrip: View {
+enum BrowserRootCoordinateSpace {
+    static let name = "browser-root"
+}
+
+struct PanePlacementChooser: View {
     @Environment(BrowserTheme.self) private var theme
 
     let store: WorkspaceBrowserStore
+    let tabID: UUID
 
     var body: some View {
-        HStack(spacing: 2) {
-            ForEach(store.visibleOrderedTabs) { tab in
-                Button {
-                    store.selectTab(tab.id)
-                } label: {
-                    HStack(spacing: 4) {
-                        if tab.isPinned {
-                            Image(systemName: "pin.fill")
-                                .font(.system(size: 8))
-                        }
+        let axis = store.activeWorkspace.splitAxis
 
-                        if tab.stackID != nil {
-                            Image(systemName: "square.stack.3d.up.fill")
-                                .font(.system(size: 8))
-                        }
-
-                        Text(tab.title)
-                            .lineLimit(1)
-
-                        if let pane = paneShowing(tab.id) {
-                            Text(pane.compactLabel)
-                                .font(.system(size: 8, weight: .bold, design: .rounded))
-                                .foregroundStyle(isActive(tab.id) ? theme.background.opacity(0.8) : theme.mutedLabel)
-                        }
-                    }
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(isActive(tab.id) ? theme.background : theme.label)
-                    .padding(.horizontal, 8)
-                    .frame(width: tab.isPinned ? 82 : 102, height: 32)
-                    .background(isActive(tab.id) ? theme.accent : theme.raisedBackground)
-                    .clipShape(RoundedRectangle(cornerRadius: 7))
-                }
-                .buttonStyle(.plain)
-                .contextMenu {
-                    Button(tab.isPinned ? "Unpin tab" : "Pin tab", systemImage: "pin") {
-                        store.toggleTabPin(tab.id)
-                    }
-
-                    Menu("Move to group") {
-                        Button("None") { store.assignTab(tab.id, to: nil) }
-                        ForEach(store.groups) { group in
-                            Button(group.name) { store.assignTab(tab.id, to: group.id) }
-                        }
-                    }
-
-                    Menu("Move to stack") {
-                        Button("None") { store.assignTab(tab.id, toStack: nil) }
-                        ForEach(store.activeWorkspace.tabStacks) { stack in
-                            Button(stack.name) { store.assignTab(tab.id, toStack: stack.id) }
-                        }
-                        Divider()
-                        Button("New stack…") { store.presentedSheet = .createTabStack }
-                    }
-
-                    Button("Archive tab", systemImage: "archivebox") {
-                        store.archiveTab(tab.id)
-                    }
-
-                    Divider()
-
-                    Button("Close tab", systemImage: "xmark", role: .destructive) {
-                        store.closeTab(tab.id)
-                    }
-                }
-            }
+        HStack(spacing: 6) {
+            paneButton(
+                .primary,
+                systemName: axis == .horizontal ? "rectangle.lefthalf.filled" : "rectangle.tophalf.filled"
+            )
+            paneButton(
+                .secondary,
+                systemName: axis == .horizontal ? "rectangle.righthalf.filled" : "rectangle.bottomhalf.filled"
+            )
         }
+        .padding(8)
+        .presentationBackground(theme.background)
     }
 
-    private func paneShowing(_ tabID: UUID) -> BrowserPane? {
-        if store.selectedTabID(for: .primary) == tabID { return .primary }
-        if store.activeWorkspace.splitEnabled,
-           store.selectedTabID(for: .secondary) == tabID { return .secondary }
-        return nil
-    }
-
-    private func isActive(_ tabID: UUID) -> Bool {
-        store.selectedTabID(for: store.activePane) == tabID
+    private func paneButton(_ pane: BrowserPane, systemName: String) -> some View {
+        Button {
+            store.placeTab(tabID, in: pane)
+        } label: {
+            VStack(spacing: 3) {
+                Image(systemName: systemName)
+                    .font(.system(size: 15, weight: .medium))
+                Text(store.activeWorkspace.splitAxis.badge(for: pane))
+                    .font(.system(size: 10, weight: .bold, design: .rounded))
+            }
+            .foregroundStyle(theme.label)
+            .frame(width: 52, height: 46)
+            .background(theme.raisedBackground, in: RoundedRectangle(cornerRadius: 8))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(pane == .primary ? "Show in first pane" : "Show in second pane")
     }
 }
 
@@ -468,11 +438,11 @@ private struct CompactAddressField: View {
 
         HStack(spacing: 6) {
             Image(systemName: session.hasOnlySecureContent ? "lock.fill" : "magnifyingglass")
-                .font(.system(size: 10, weight: .semibold))
+                .font(.system(size: 8, weight: .semibold))
                 .foregroundStyle(session.hasOnlySecureContent ? theme.tailnet : theme.mutedLabel)
 
             TextField("Address, search, or ssh://", text: $session.address)
-                .font(.system(size: 11))
+                .font(.system(size: 10))
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
                 .keyboardType(.webSearch)
@@ -491,21 +461,43 @@ private struct CompactAddressField: View {
                     }
                     focused = false
                 }
+
+            if session.isLoading {
+                reloadButton(systemName: "xmark", label: "Stop loading") {
+                    session.stopLoading()
+                }
+            } else if session.currentURL != nil {
+                reloadButton(systemName: "arrow.clockwise", label: "Reload page") {
+                    session.reload()
+                }
+            }
         }
-        .padding(.horizontal, 9)
+        .padding(.horizontal, 7)
         .frame(
-            minWidth: fillsAvailableWidth ? 120 : 206,
-            idealWidth: 206,
-            maxWidth: fillsAvailableWidth ? .infinity : 206,
-            minHeight: 34,
-            maxHeight: 34
+            minWidth: fillsAvailableWidth ? 100 : 216,
+            idealWidth: 246,
+            maxWidth: fillsAvailableWidth ? .infinity : 246,
+            minHeight: 24,
+            maxHeight: 24
         )
-        .background(theme.raisedBackground, in: RoundedRectangle(cornerRadius: 7))
+        .background(theme.raisedBackground, in: RoundedRectangle(cornerRadius: 5))
         .overlay {
-            RoundedRectangle(cornerRadius: 7)
+            RoundedRectangle(cornerRadius: 5)
                 .stroke(focused ? theme.label.opacity(0.6) : theme.border, lineWidth: 0.75)
         }
         .accessibilityIdentifier("browser.address")
+    }
+
+    private func reloadButton(systemName: String, label: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: systemName)
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(theme.mutedLabel)
+                .frame(width: 20, height: 22)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(label)
     }
 }
 
@@ -524,19 +516,12 @@ private struct CompactNavigationControl: View {
             navigationButton("chevron.forward", label: "Forward", disabled: !session.canGoForward) {
                 session.goForward()
             }
-            navigationButton(session.isLoading ? "xmark" : "arrow.clockwise", label: session.isLoading ? "Stop" : "Reload") {
-                if session.isLoading {
-                    session.stopLoading()
-                } else {
-                    session.reload()
-                }
-            }
         }
         .overlay {
-            RoundedRectangle(cornerRadius: 7)
+            RoundedRectangle(cornerRadius: 5)
                 .stroke(theme.border, lineWidth: 0.75)
         }
-        .clipShape(RoundedRectangle(cornerRadius: 7))
+        .clipShape(RoundedRectangle(cornerRadius: 5))
     }
 
     private func navigationButton(
@@ -549,7 +534,7 @@ private struct CompactNavigationControl: View {
             Image(systemName: systemName)
                 .font(.system(size: 10, weight: .semibold))
                 .foregroundStyle(theme.label)
-                .frame(width: 30, height: 34)
+                .frame(width: 24, height: 24)
         }
         .buttonStyle(.plain)
         .disabled(disabled)
@@ -566,20 +551,45 @@ private struct PaneFocusControl: View {
     var body: some View {
         HStack(spacing: 0) {
             ForEach(BrowserPane.allCases) { pane in
-                Button(pane.compactLabel) {
+                Button(store.activeWorkspace.splitAxis.badge(for: pane)) {
                     store.setActivePane(pane)
                 }
                 .font(.system(size: 9, weight: .bold, design: .rounded))
                 .foregroundStyle(store.activePane == pane ? theme.background : theme.mutedLabel)
-                .frame(width: 30, height: 34)
+                .frame(width: 24, height: 24)
                 .background(store.activePane == pane ? theme.accent : Color.clear)
             }
         }
         .overlay {
-            RoundedRectangle(cornerRadius: 7)
+            RoundedRectangle(cornerRadius: 5)
                 .stroke(theme.border, lineWidth: 0.75)
         }
-        .clipShape(RoundedRectangle(cornerRadius: 7))
+        .clipShape(RoundedRectangle(cornerRadius: 5))
         .accessibilityLabel("Active split pane")
+    }
+}
+
+private struct AppBarIconButton: View {
+    @Environment(BrowserTheme.self) private var theme
+
+    let systemName: String
+    let accessibilityLabel: String
+    var selected = false
+    var disabled = false
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: systemName)
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(selected ? theme.background : theme.label)
+                .frame(width: 26, height: 26)
+                .background(selected ? theme.accent : Color.clear, in: RoundedRectangle(cornerRadius: 5))
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(disabled)
+        .opacity(disabled ? 0.35 : 1)
+        .accessibilityLabel(accessibilityLabel)
     }
 }

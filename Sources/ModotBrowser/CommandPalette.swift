@@ -103,8 +103,10 @@ struct BrowserCommandPalette: View {
             },
             action("Toggle split view", "rectangle.split.2x1", "Layout") { store.toggleSplit() },
             action("Open sidebar", "sidebar.left", "Layout") { store.sidebarVisible = true },
-            action("Page note", "note.text", store.currentPageTitle) { store.presentedSheet = .pageNote },
             action("Page tools", "wrench.and.screwdriver", store.currentPageTitle) { store.presentedSheet = .pageTools },
+            action("Developer tools", "chevron.left.forwardslash.chevron.right", store.currentPageTitle) {
+                store.presentedSheet = .developerTools
+            },
             action("Site settings", "switch.2", store.currentPageURL?.host()) { store.presentedSheet = .siteSettings },
             action("Tab history and archive", "archivebox", "Browser") { store.presentedSheet = .tabArchive },
             action("Downloads", "arrow.down.circle", "Browser") { store.presentedSheet = .downloads },
@@ -131,7 +133,7 @@ struct BrowserCommandPalette: View {
                 store.selectTab(tab.id)
             }
         }
-        result += store.bookmarks.map { bookmark in
+        result += store.visibleBookmarks.map { bookmark in
             action(bookmark.title, "bookmark", bookmark.url?.host() ?? "Service") {
                 store.openBookmark(bookmark.id)
             }

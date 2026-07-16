@@ -16,10 +16,10 @@ struct BrowserManagementSheet: View {
             CreateTabStackSheet(store: store)
         case .siteSettings:
             SiteSettingsSheet(store: store)
-        case .pageNote:
-            PageNoteSheet(store: store)
         case .pageTools:
             PageToolsSheet(store: store)
+        case .developerTools:
+            BrowserDeveloperToolsSheet(store: store)
         case .tabArchive:
             TabArchiveSheet(store: store)
         case .downloads:
@@ -74,6 +74,7 @@ private struct AddBookmarkSheet: View {
     @State private var title: String
     @State private var url: String
     @State private var groupID: UUID?
+    @State private var workspaceID: UUID?
     @State private var isPinned = true
 
     let store: WorkspaceBrowserStore
@@ -83,6 +84,7 @@ private struct AddBookmarkSheet: View {
         _title = State(initialValue: initialTitle)
         _url = State(initialValue: initialURL)
         _groupID = State(initialValue: store.groups.first?.id)
+        _workspaceID = State(initialValue: store.activeWorkspaceID)
     }
 
     var body: some View {
@@ -90,6 +92,22 @@ private struct AddBookmarkSheet: View {
             VStack(spacing: 16) {
                 LabeledField(title: "Name", placeholder: "Codex", text: $title)
                 LabeledField(title: "Address", placeholder: "https://service.tailnet.ts.net", text: $url)
+
+                VStack(alignment: .leading, spacing: 7) {
+                    Text("WORKSPACE")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundStyle(.secondary)
+
+                    Picker("Workspace", selection: $workspaceID) {
+                        Text("All workspaces").tag(UUID?.none)
+                        ForEach(store.workspaces) { workspace in
+                            Text(workspace.name).tag(Optional(workspace.id))
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .shadcnField()
+                }
 
                 VStack(alignment: .leading, spacing: 7) {
                     Text("GROUP")
@@ -111,7 +129,10 @@ private struct AddBookmarkSheet: View {
                     .font(.system(size: 13, weight: .medium))
             }
         } onConfirm: {
-            store.addBookmark(title: title, urlString: url, groupID: groupID, isPinned: isPinned)
+            store.addBookmark(
+                title: title, urlString: url, groupID: groupID,
+                isPinned: isPinned, workspaceID: workspaceID
+            )
             dismiss()
         }
     }

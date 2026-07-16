@@ -78,6 +78,9 @@ final class TerminalSession: Identifiable {
     var state: TerminalConnectionState = .connecting
     var terminalTitle: String = ""
 
+    /// Set when this tab attaches a discovered tmux session rather than the
+    /// profile's fixed one.
+    @ObservationIgnored let tmuxAttach: TmuxAttachIntent?
     @ObservationIgnored let terminalView: ModotTerminalView
     @ObservationIgnored private var engine: any SSHConnectionEngineProtocol = SSHConnectionEngine()
     @ObservationIgnored private let approveHostKey: HostKeyApproval
@@ -88,9 +91,15 @@ final class TerminalSession: Identifiable {
     @ObservationIgnored private var connectionAttemptID = UUID()
     @ObservationIgnored private var wantsConnection = true
 
-    init(id: UUID = UUID(), profile: SSHProfile, approveHostKey: @escaping HostKeyApproval) {
+    init(
+        id: UUID = UUID(),
+        profile: SSHProfile,
+        tmuxAttach: TmuxAttachIntent? = nil,
+        approveHostKey: @escaping HostKeyApproval
+    ) {
         self.id = id
         self.profile = profile
+        self.tmuxAttach = tmuxAttach
         self.approveHostKey = approveHostKey
         terminalView = ModotTerminalView(frame: .zero)
 
@@ -110,8 +119,33 @@ final class TerminalSession: Identifiable {
     var title: String {
         let remoteTitle = terminalTitle.trimmingCharacters(in: .whitespacesAndNewlines)
         if !remoteTitle.isEmpty { return remoteTitle }
+        if let tmuxAttach { return "\(profile.displayName) · \(tmuxAttach.sessionName)" }
         if profile.usesTmux { return "\(profile.displayName) · \(profile.tmuxSession)" }
         return profile.displayName
+    }
+
+    /// The tmux session this tab stands for, used to avoid duplicate tabs.
+    var tmuxIdentity: TmuxTabIdentity? {
+        if let tmuxAttach {
+            return TmuxTabIdentity(
+                profileID: profile.id,
+                sessionID: tmuxAttach.sessionID,
+                sessionName: tmuxAttach.sessionName
+            )
+        }
+        if profile.usesTmux {
+            return TmuxTabIdentity(
+                profileID: profile.id,
+                sessionID: nil,
+                sessionName: profile.normalized.tmuxSession
+            )
+        }
+        return nil
+    }
+
+    var startupCommand: String? {
+        if let tmuxAttach { return TmuxDiscovery.attachCommand(target: tmuxAttach.target) }
+        return profile.tmuxStartupCommand
     }
 
     func connect() {
@@ -126,12 +160,14 @@ final class TerminalSession: Identifiable {
 
         let engine = engine
         let profile = profile
+        let startupCommand = startupCommand
         let approveHostKey = approveHostKey
         connectionTask = Task { [weak self] in
             await previousEngine.disconnect()
             do {
                 try await engine.run(
                     profile: profile,
+                    startupCommand: startupCommand,
                     approveHostKey: approveHostKey,
                     onOutput: { [weak self] bytes in
                         await self?.receive(bytes)
@@ -180,6 +216,12 @@ final class TerminalSession: Identifiable {
 
     func dismissKeyboard() {
         _ = terminalView.resignFirstResponder()
+    }
+
+    /// Feeds a special key (Esc, Ctrl+C, arrows, …) into the remote shell,
+    /// used by the pet quick actions.
+    func sendKeystroke(_ keystroke: TerminalKeystroke) {
+        send(keystroke.bytes)
     }
 
     private func stopConnection(state nextState: TerminalConnectionState) {
@@ -266,6 +308,10 @@ final class TerminalSession: Identifiable {
 final class TerminalWorkspaceStore {
     static let launcherStorageKey = "modot-browser.terminal-launcher.v1"
 
+    /// How often the app re-reads `@modot_*` pane options while tmux tabs are
+    /// connected and the app is foregrounded.
+    static let agentPollInterval: Duration = .seconds(30)
+
     var profiles: [SSHProfile]
     var tabs: [TerminalSession] = []
     var selectedTabID: UUID?
@@ -274,11 +320,22 @@ final class TerminalWorkspaceStore {
     var presentedSheet: TerminalSheetDestination?
     var pendingHostTrust: HostTrustRequest?
     var storageErrorMessage: String?
+    var tmuxDiscovery: [UUID: TmuxDiscoveryState] = [:]
+
+    /// Receives deduplicated agent events (the pet listens here). Optional:
+    /// nothing depends on it being set.
+    @ObservationIgnored var agentEventHandler: ((TerminalAgentNotification) -> Void)?
+    /// Injectable for tests so discovery never has to open a real connection.
+    @ObservationIgnored var makeCommandRunner: (SSHProfile) -> any SSHOneShotCommandRunning = {
+        SSHOneShotCommandRunnerFactory.makeRunner(for: $0)
+    }
 
     @ObservationIgnored private let vault: SSHProfileVault
     @ObservationIgnored private let defaults: UserDefaults
     @ObservationIgnored private var trustQueue: [HostTrustRequest] = []
     @ObservationIgnored private var trustContinuations: [UUID: CheckedContinuation<Bool, Never>] = [:]
+    @ObservationIgnored private var eventDeduplicators: [UUID: TmuxAgentEventDeduplicator] = [:]
+    @ObservationIgnored private var agentPollTask: Task<Void, Never>?
 
     init(
         vault: SSHProfileVault = KeychainSSHProfileVault(),
@@ -298,6 +355,10 @@ final class TerminalWorkspaceStore {
             profiles = []
             storageErrorMessage = error.localizedDescription
         }
+    }
+
+    deinit {
+        agentPollTask?.cancel()
     }
 
     var selectedTab: TerminalSession? {
@@ -334,8 +395,36 @@ final class TerminalWorkspaceStore {
     func openTab(profileID: UUID) {
         guard let profile = profiles.first(where: { $0.id == profileID }) else { return }
         presentedSurface = .terminal
+        appendTab(profile: profile, tmuxAttach: nil)
+    }
+
+    /// Opens a tab attached to a session found by tmux discovery. If a tab
+    /// already shows that session (fixed-profile or discovered), it is
+    /// selected instead of opening a duplicate.
+    func openDiscoveredTmuxSession(profileID: UUID, session: TmuxSessionSummary) {
+        presentedSurface = .terminal
+        if let existing = tabs.first(where: {
+            $0.tmuxIdentity?.represents(
+                profileID: profileID,
+                sessionID: session.sessionID,
+                sessionName: session.name
+            ) == true
+        }) {
+            selectedTabID = existing.id
+            existing.reconnectIfNeeded()
+            return
+        }
+        guard let profile = profiles.first(where: { $0.id == profileID }) else { return }
+        appendTab(profile: profile, tmuxAttach: TmuxAttachIntent(session: session))
+    }
+
+    private func appendTab(profile: SSHProfile, tmuxAttach: TmuxAttachIntent?) {
         let sessionID = UUID()
-        let session = TerminalSession(id: sessionID, profile: profile) { [weak self] fingerprint, expected in
+        let session = TerminalSession(
+            id: sessionID,
+            profile: profile,
+            tmuxAttach: tmuxAttach
+        ) { [weak self] fingerprint, expected in
             guard let self else { return false }
             return await self.requestHostTrust(
                 sessionID: sessionID,
@@ -346,11 +435,21 @@ final class TerminalWorkspaceStore {
         }
         tabs.append(session)
         selectedTabID = session.id
+        startAgentEventMonitorIfNeeded()
     }
 
     func selectTab(_ tabID: UUID) {
         guard tabs.contains(where: { $0.id == tabID }) else { return }
         selectedTabID = tabID
+    }
+
+    /// Sends a special key to the focused terminal tab. Returns false when no
+    /// connected terminal is available to receive it.
+    @discardableResult
+    func sendKeystroke(_ keystroke: TerminalKeystroke) -> Bool {
+        guard let tab = selectedTab, tab.state == .connected else { return false }
+        tab.sendKeystroke(keystroke)
+        return true
     }
 
     func closeTab(_ tabID: UUID) {
@@ -448,16 +547,147 @@ final class TerminalWorkspaceStore {
     func handleScenePhase(_ phase: ScenePhase) {
         switch phase {
         case .background:
+            // SSH stays suspended in the background; agent polling stops with it.
+            stopAgentEventMonitor()
             for tab in tabs {
                 tab.suspendForBackground()
                 cancelHostTrustRequests(for: tab.id)
             }
         case .active:
             tabs.forEach { $0.resumeAfterBackground() }
+            startAgentEventMonitorIfNeeded()
         case .inactive:
             break
         @unknown default:
             break
+        }
+    }
+
+    // MARK: - tmux discovery
+
+    func presentTmuxSessions() {
+        presentedSurface = .terminal
+        presentedSheet = .tmuxSessions
+    }
+
+    /// User-initiated discovery for one profile. May present the host-trust
+    /// prompt; results land in `tmuxDiscovery`.
+    func refreshTmuxSessions(profileID: UUID) async {
+        guard let profile = profiles.first(where: { $0.id == profileID }) else { return }
+        var state = tmuxDiscovery[profileID] ?? TmuxDiscoveryState()
+        guard !state.isLoading else { return }
+        state.isLoading = true
+        tmuxDiscovery[profileID] = state
+
+        let result = await fetchTmuxState(profile: profile, interactive: true)
+
+        var next = tmuxDiscovery[profileID] ?? TmuxDiscoveryState()
+        next.isLoading = false
+        next.result = result
+        next.refreshedAt = Date()
+        tmuxDiscovery[profileID] = next
+        handleAgentMetadata(result, profile: profile)
+    }
+
+    private func fetchTmuxState(profile: SSHProfile, interactive: Bool) async -> TmuxQueryResult {
+        let runner = makeCommandRunner(profile)
+        let approval: SSHHostKeyApproval
+        if interactive {
+            let requestSessionID = UUID()
+            approval = { [weak self] fingerprint, expected in
+                guard let self else { return false }
+                return await self.requestHostTrust(
+                    sessionID: requestSessionID,
+                    profile: profile,
+                    fingerprint: fingerprint,
+                    expectedFingerprint: expected
+                )
+            }
+        } else {
+            // Background polls never prompt: unknown or changed host keys
+            // simply fail the poll.
+            approval = { _, _ in false }
+        }
+
+        do {
+            let result = try await runner.run(
+                command: TmuxDiscovery.listPanesCommand,
+                profile: profile,
+                approveHostKey: approval
+            )
+            return TmuxDiscovery.classify(exitCode: result.exitCode, output: result.output)
+        } catch {
+            return .failed(error.localizedDescription)
+        }
+    }
+
+    /// Forwards fresh `@modot_*` events to the pet (or whoever listens).
+    /// Panes without metadata are the normal case and produce nothing.
+    private func handleAgentMetadata(_ result: TmuxQueryResult, profile: SSHProfile) {
+        guard case .sessions(let sessions) = result else { return }
+        let panes = sessions.flatMap(\.panes)
+        var deduplicator = eventDeduplicators[profile.id] ?? TmuxAgentEventDeduplicator()
+        let events = deduplicator.events(from: panes)
+        eventDeduplicators[profile.id] = deduplicator
+
+        guard let handler = agentEventHandler else { return }
+        for event in events {
+            let tabID = tabs.first(where: {
+                $0.tmuxIdentity?.represents(
+                    profileID: profile.id,
+                    sessionID: event.sessionID,
+                    sessionName: event.sessionName
+                ) == true
+            })?.id
+            handler(
+                TerminalAgentNotification(
+                    event: event,
+                    profileID: profile.id,
+                    profileName: profile.displayName,
+                    tabID: tabID
+                )
+            )
+        }
+    }
+
+    private func startAgentEventMonitorIfNeeded() {
+        guard agentPollTask == nil else { return }
+        agentPollTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: Self.agentPollInterval)
+                guard !Task.isCancelled else { return }
+                await self?.pollTmuxAgentMetadata()
+            }
+        }
+    }
+
+    private func stopAgentEventMonitor() {
+        agentPollTask?.cancel()
+        agentPollTask = nil
+    }
+
+    private func pollTmuxAgentMetadata() async {
+        guard agentEventHandler != nil else { return }
+        // Only hosts that already have a connected tmux tab and a pinned host
+        // key are polled; each poll is one short-lived exec connection.
+        let profileIDs = Set(
+            tabs.compactMap { tab -> UUID? in
+                guard tab.state == .connected,
+                      tab.tmuxIdentity != nil,
+                      tab.profile.hostKeyFingerprint != nil else { return nil }
+                return tab.profile.id
+            }
+        )
+        for profileID in profileIDs {
+            guard let profile = profiles.first(where: { $0.id == profileID }) else { continue }
+            let result = await fetchTmuxState(profile: profile, interactive: false)
+            if case .sessions = result {
+                var state = tmuxDiscovery[profileID] ?? TmuxDiscoveryState()
+                state.result = result
+                state.refreshedAt = Date()
+                tmuxDiscovery[profileID] = state
+            }
+            handleAgentMetadata(result, profile: profile)
         }
     }
 

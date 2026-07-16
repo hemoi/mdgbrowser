@@ -1,5 +1,6 @@
 import QuickLook
 import SwiftUI
+import UIKit
 
 struct CreateTabStackSheet: View {
     @Environment(\.dismiss) private var dismiss
@@ -89,45 +90,6 @@ struct SiteSettingsSheet: View {
             ForEach(BrowserPermission.allCases) { permission in
                 Text(permission.label).tag(permission)
             }
-        }
-    }
-}
-
-struct PageNoteSheet: View {
-    @Environment(\.dismiss) private var dismiss
-    @State private var text: String
-    let store: WorkspaceBrowserStore
-
-    init(store: WorkspaceBrowserStore) {
-        self.store = store
-        _text = State(initialValue: store.currentPageNote?.text ?? "")
-    }
-
-    var body: some View {
-        FeatureSheetScaffold(title: "Page note") {
-            VStack(alignment: .leading, spacing: 10) {
-                Text(store.currentPageTitle)
-                    .font(.subheadline.weight(.semibold))
-                    .lineLimit(2)
-                Text(store.currentPageURL?.absoluteString ?? "Start page")
-                    .font(.caption.monospaced())
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
-                TextEditor(text: $text)
-                    .font(.body)
-                    .scrollContentBackground(.hidden)
-                    .padding(8)
-                    .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 10))
-                    .overlay { RoundedRectangle(cornerRadius: 10).stroke(.separator, lineWidth: 0.5) }
-                    .frame(minHeight: 80)
-                    .accessibilityLabel("Page note text")
-            }
-        } footer: {
-            Button("Save") {
-                store.saveCurrentPageNote(text)
-                dismiss()
-            }
-            .buttonStyle(.borderedProminent)
         }
     }
 }
@@ -239,6 +201,383 @@ struct PageToolsSheet: View {
                 resultMessage = "Screenshot saved to Downloads"
             } catch { resultMessage = error.localizedDescription }
         }
+    }
+}
+
+struct BrowserDeveloperToolsSheet: View {
+    @Environment(BrowserTheme.self) private var theme
+    @State private var panel = DeveloperPanel.console
+    @State private var snapshot = DeveloperSnapshot.empty
+    @State private var command = "document.title"
+    @State private var evaluationResult = ""
+    @State private var errorMessage = ""
+    @State private var refreshing = false
+    @State private var logSelection = DeveloperConsoleSelection()
+    @State private var copyStatus = ""
+
+    let store: WorkspaceBrowserStore
+
+    var body: some View {
+        let session = store.session(for: store.activePane)
+
+        FeatureSheetScaffold(title: "Developer tools · \(store.currentPageTitle)") {
+            VStack(spacing: 0) {
+                HStack(spacing: 10) {
+                    Picker("Panel", selection: $panel) {
+                        ForEach(DeveloperPanel.allCases) { panel in
+                            Label(panel.label, systemImage: panel.systemName).tag(panel)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+
+                    Button {
+                        Task { await refresh(session) }
+                    } label: {
+                        Image(systemName: "arrow.clockwise")
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(refreshing)
+                    .accessibilityLabel("Refresh developer data")
+                }
+                .padding(10)
+
+                if !errorMessage.isEmpty {
+                    Text(errorMessage)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 12)
+                        .padding(.bottom, 8)
+                }
+
+                Divider()
+
+                switch panel {
+                case .console:
+                    consolePanel(session)
+                case .dom:
+                    domPanel
+                case .network:
+                    networkPanel
+                case .javascript:
+                    javascriptPanel(session)
+                }
+            }
+        } footer: { EmptyView() }
+        .task { await refresh(session) }
+        .onChange(of: copyStatus) {
+            guard !copyStatus.isEmpty else { return }
+            Task {
+                try? await Task.sleep(for: .seconds(2.2))
+                copyStatus = ""
+            }
+        }
+    }
+
+    private func consolePanel(_ session: BrowserSession) -> some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 14) {
+                Text(copyStatus.isEmpty ? "\(snapshot.logs.count) messages" : copyStatus)
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(theme.mutedLabel)
+                    .lineLimit(1)
+                Spacer()
+                if !logSelection.isEmpty {
+                    Button("Deselect") { logSelection.clear() }
+                        .font(.caption)
+                        .buttonStyle(.plain)
+                }
+                Button(logSelection.isEmpty ? "Copy" : "Copy (\(logSelection.count))") {
+                    copySelectedLogs()
+                }
+                .font(.caption)
+                .buttonStyle(.plain)
+                .disabled(logSelection.isEmpty)
+                .accessibilityLabel("Copy \(logSelection.count) selected logs")
+                Button("Clear") {
+                    Task {
+                        do {
+                            try await session.clearDeveloperConsole()
+                            await refresh(session)
+                        } catch {
+                            errorMessage = error.localizedDescription
+                        }
+                    }
+                }
+                .font(.caption)
+                .buttonStyle(.plain)
+            }
+            .padding(.horizontal, 12)
+            .frame(height: 30)
+
+            Divider()
+
+            if snapshot.logs.isEmpty {
+                ContentUnavailableView("No console messages", systemImage: "terminal")
+            } else {
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 0) {
+                        ForEach(Array(snapshot.logs.enumerated()), id: \.offset) { index, entry in
+                            consoleRow(index: index, entry: entry)
+                            Divider().padding(.leading, 54)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func consoleRow(index: Int, entry: DeveloperConsoleEntry) -> some View {
+        let id = DeveloperConsoleLogID(index: index, entry: entry)
+        let isSelected = logSelection.isSelected(id)
+        return HStack(alignment: .top, spacing: 8) {
+            Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                .font(.system(size: 12))
+                .foregroundStyle(isSelected ? theme.accent : theme.mutedLabel.opacity(0.5))
+                .frame(width: 14, height: 16)
+            Image(systemName: entry.systemName)
+                .font(.system(size: 9, weight: .semibold))
+                .foregroundStyle(entry.color)
+                .frame(width: 12, height: 16)
+            Text(entry.message)
+                .font(.system(size: 10, design: .monospaced))
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            Text(entry.timeLabel)
+                .font(.system(size: 8, design: .monospaced))
+                .foregroundStyle(theme.mutedLabel)
+            Menu {
+                Button("Copy message", systemImage: "doc.on.doc") { copyLog(entry) }
+                Button(isSelected ? "Deselect" : "Select",
+                       systemImage: isSelected ? "circle" : "checkmark.circle") {
+                    logSelection.toggle(id)
+                }
+            } label: {
+                Image(systemName: "ellipsis")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(theme.mutedLabel)
+                    .frame(width: 16, height: 16)
+                    .contentShape(Rectangle())
+            }
+            .accessibilityLabel("Log actions")
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .background(
+            isSelected
+                ? theme.accent.opacity(0.08)
+                : entry.level == "error" ? Color.red.opacity(0.06) : Color.clear
+        )
+        .contentShape(Rectangle())
+        .onTapGesture { logSelection.toggle(id) }
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
+    }
+
+    private func copySelectedLogs() {
+        guard let text = logSelection.copyText(from: snapshot.logs) else {
+            copyStatus = "Tap logs to select them first"
+            return
+        }
+        UIPasteboard.general.string = text
+        copyStatus = "Copied \(logSelection.count) \(logSelection.count == 1 ? "log" : "logs")"
+    }
+
+    private func copyLog(_ entry: DeveloperConsoleEntry) {
+        UIPasteboard.general.string = entry.message
+        copyStatus = "Log message copied"
+    }
+
+    private var domPanel: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Text(snapshot.url)
+                    .font(.system(size: 9, design: .monospaced))
+                    .foregroundStyle(theme.mutedLabel)
+                    .lineLimit(1)
+                Spacer()
+                Text("\(snapshot.dom.count) chars")
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(theme.mutedLabel)
+            }
+            .padding(.horizontal, 12)
+            .frame(height: 30)
+
+            Divider()
+
+            TextEditor(text: .constant(snapshot.dom))
+                .font(.system(size: 10, design: .monospaced))
+                .autocorrectionDisabled()
+                .padding(6)
+        }
+    }
+
+    private var networkPanel: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Text("\(snapshot.resources.count) resources")
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(theme.mutedLabel)
+                Spacer()
+                Text("Resource Timing")
+                    .font(.caption2)
+                    .foregroundStyle(theme.mutedLabel)
+            }
+            .padding(.horizontal, 12)
+            .frame(height: 30)
+
+            Divider()
+
+            if snapshot.resources.isEmpty {
+                ContentUnavailableView("No resource timing data", systemImage: "network")
+            } else {
+                List(snapshot.resources.reversed()) { resource in
+                    HStack(spacing: 10) {
+                        Text(resource.initiatorType.uppercased())
+                            .font(.system(size: 8, weight: .bold, design: .monospaced))
+                            .foregroundStyle(theme.mutedLabel)
+                            .frame(width: 48, alignment: .leading)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(resource.name)
+                                .font(.system(size: 10, design: .monospaced))
+                                .lineLimit(1)
+                            Text(resource.detailLabel)
+                                .font(.system(size: 8, design: .monospaced))
+                                .foregroundStyle(theme.mutedLabel)
+                        }
+                    }
+                    .listRowInsets(EdgeInsets(top: 6, leading: 12, bottom: 6, trailing: 12))
+                }
+                .listStyle(.plain)
+                .scrollContentBackground(.hidden)
+            }
+        }
+    }
+
+    private func javascriptPanel(_ session: BrowserSession) -> some View {
+        VStack(spacing: 10) {
+            TextEditor(text: $command)
+                .font(.system(size: 11, design: .monospaced))
+                .autocorrectionDisabled()
+                .padding(6)
+                .frame(minHeight: 110)
+                .background(theme.raisedBackground)
+                .clipShape(RoundedRectangle(cornerRadius: 6))
+
+            HStack {
+                Text("Runs in the current page")
+                    .font(.caption)
+                    .foregroundStyle(theme.mutedLabel)
+                Spacer()
+                Button("Run", systemImage: "play.fill") {
+                    Task { await evaluate(session) }
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(command.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+
+            Divider()
+
+            ScrollView {
+                Text(evaluationResult.isEmpty ? "Result appears here." : evaluationResult)
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(evaluationResult.isEmpty ? theme.mutedLabel : theme.label)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .topLeading)
+            }
+            .frame(maxHeight: .infinity)
+        }
+        .padding(12)
+    }
+
+    private func refresh(_ session: BrowserSession) async {
+        refreshing = true
+        defer { refreshing = false }
+        do {
+            let data = Data(try await session.developerSnapshotJSON().utf8)
+            var decoded = try JSONDecoder().decode(DeveloperSnapshot.self, from: data)
+            if decoded.dom.count > 750_000 {
+                decoded.dom = String(decoded.dom.prefix(750_000)) + "\n<!-- Truncated by Modot Browser -->"
+            }
+            snapshot = decoded
+            logSelection.reconcile(with: decoded.logs)
+            errorMessage = ""
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    private func evaluate(_ session: BrowserSession) async {
+        do {
+            evaluationResult = try await session.runDeveloperScript(command)
+            errorMessage = ""
+            await refresh(session)
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+}
+
+private enum DeveloperPanel: String, CaseIterable, Identifiable {
+    case console, dom, network, javascript
+
+    var id: Self { self }
+    var label: String {
+        switch self {
+        case .console: "Console"
+        case .dom: "DOM"
+        case .network: "Network"
+        case .javascript: "JS"
+        }
+    }
+    var systemName: String {
+        switch self {
+        case .console: "terminal"
+        case .dom: "chevron.left.forwardslash.chevron.right"
+        case .network: "network"
+        case .javascript: "play.rectangle"
+        }
+    }
+}
+
+private struct DeveloperSnapshot: Decodable {
+    var url: String
+    var title: String
+    var dom: String
+    var logs: [DeveloperConsoleEntry]
+    var resources: [DeveloperResourceEntry]
+
+    static let empty = DeveloperSnapshot(url: "", title: "", dom: "", logs: [], resources: [])
+}
+
+private extension DeveloperConsoleEntry {
+    var systemName: String {
+        switch level {
+        case "error": "xmark.octagon.fill"
+        case "warn": "exclamationmark.triangle.fill"
+        case "info": "info.circle.fill"
+        default: "chevron.right"
+        }
+    }
+    var color: Color {
+        switch level {
+        case "error": .red
+        case "warn": .orange
+        case "info": .blue
+        default: .secondary
+        }
+    }
+}
+
+private struct DeveloperResourceEntry: Decodable, Identifiable {
+    var id: String { "\(name)-\(duration)-\(transferSize)" }
+    let name: String
+    let initiatorType: String
+    let duration: Double
+    let transferSize: Double
+
+    var detailLabel: String {
+        let bytes = transferSize > 0 ? ByteCountFormatter.string(fromByteCount: Int64(transferSize), countStyle: .file) : "cached/unknown"
+        return "\(duration.formatted(.number.precision(.fractionLength(1)))) ms · \(bytes)"
     }
 }
 

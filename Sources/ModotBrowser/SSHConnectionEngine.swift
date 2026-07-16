@@ -30,6 +30,7 @@ typealias SSHHostKeyApproval = @Sendable (
 protocol SSHConnectionEngineProtocol: AnyObject, Sendable {
     func run(
         profile: SSHProfile,
+        startupCommand: String?,
         approveHostKey: @escaping SSHHostKeyApproval,
         onOutput: @escaping @Sendable ([UInt8]) async -> Void,
         onReady: @escaping @Sendable () async -> Void
@@ -38,6 +39,25 @@ protocol SSHConnectionEngineProtocol: AnyObject, Sendable {
     func send(_ bytes: [UInt8]) async throws
     func resize(cols: Int, rows: Int, pixelWidth: Int, pixelHeight: Int) async
     func disconnect() async
+}
+
+extension SSHConnectionEngineProtocol {
+    /// Backwards-compatible entry point: the startup command defaults to the
+    /// profile's fixed tmux attach/create behavior.
+    func run(
+        profile: SSHProfile,
+        approveHostKey: @escaping SSHHostKeyApproval,
+        onOutput: @escaping @Sendable ([UInt8]) async -> Void,
+        onReady: @escaping @Sendable () async -> Void
+    ) async throws {
+        try await run(
+            profile: profile,
+            startupCommand: profile.tmuxStartupCommand,
+            approveHostKey: approveHostKey,
+            onOutput: onOutput,
+            onReady: onReady
+        )
+    }
 }
 
 private struct SSHClientBox: @unchecked Sendable {
@@ -104,6 +124,7 @@ final class SSHConnectionEngine: SSHConnectionEngineProtocol, @unchecked Sendabl
 
     func run(
         profile: SSHProfile,
+        startupCommand: String?,
         approveHostKey: @escaping SSHHostKeyApproval,
         onOutput: @escaping OutputHandler,
         onReady: @escaping ReadyHandler
@@ -157,7 +178,7 @@ final class SSHConnectionEngine: SSHConnectionEngineProtocol, @unchecked Sendabl
             try await connectedClient.withPTY(request, environment: environment) { inbound, outbound in
                 installWriter(outbound)
 
-                if let command = profile.tmuxStartupCommand {
+                if let command = startupCommand {
                     try await outbound.write(ByteBuffer(bytes: TerminalWireEncoding.bytes(for: command)))
                 }
                 await onReady()
@@ -180,7 +201,7 @@ final class SSHConnectionEngine: SSHConnectionEngineProtocol, @unchecked Sendabl
         }
     }
 
-    private static func authenticationMethod(for profile: SSHProfile) throws -> SSHAuthenticationMethod {
+    fileprivate static func authenticationMethod(for profile: SSHProfile) throws -> SSHAuthenticationMethod {
         switch profile.authenticationKind {
         case .password:
             return .passwordBased(username: profile.username, password: profile.password)
@@ -260,5 +281,58 @@ final class SSHConnectionEngine: SSHConnectionEngineProtocol, @unchecked Sendabl
         writer = nil
         client = nil
         return currentClient
+    }
+}
+
+/// One-shot exec runner for private-key profiles. Opens a short-lived Citadel
+/// connection, runs a single command on an exec channel, and closes — the
+/// interactive terminal session is never involved.
+final class CitadelOneShotCommandRunner: SSHOneShotCommandRunning {
+    func run(
+        command: String,
+        profile: SSHProfile,
+        approveHostKey: @escaping SSHHostKeyApproval
+    ) async throws -> SSHCommandResult {
+        let profile = profile.normalized
+        let hostKeyDelegate = PinnedHostKeyDelegate(
+            expectedFingerprint: profile.hostKeyFingerprint,
+            approval: approveHostKey
+        )
+        let authenticationMethod = SSHAuthenticationMethodBox(
+            value: try SSHConnectionEngine.authenticationMethod(for: profile)
+        )
+        var settings = SSHClientSettings(
+            host: profile.host,
+            port: profile.port,
+            authenticationMethod: { authenticationMethod.value },
+            hostKeyValidator: .custom(hostKeyDelegate)
+        )
+        settings.connectTimeout = .seconds(20)
+
+        let client = try await SSHClient.connect(to: settings)
+        defer {
+            let box = SSHClientBox(value: client)
+            Task { try? await box.value.close() }
+        }
+
+        var collected = ""
+        var exitCode: Int32? = 0
+        do {
+            let stream = try await client.executeCommandStream(command)
+            for try await chunk in stream {
+                switch chunk {
+                case .stdout(var buffer), .stderr(var buffer):
+                    if let text = buffer.readString(length: buffer.readableBytes) {
+                        collected += text
+                    }
+                }
+                if collected.utf8.count > 1_048_576 {
+                    break
+                }
+            }
+        } catch let failure as SSHClient.CommandFailed {
+            exitCode = Int32(failure.exitCode)
+        }
+        return SSHCommandResult(exitCode: exitCode, output: collected)
     }
 }

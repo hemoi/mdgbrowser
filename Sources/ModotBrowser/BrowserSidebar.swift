@@ -14,11 +14,8 @@ struct BrowserSidebar: View {
                 LazyVStack(spacing: 0) {
                     workspaceSection
                     sectionDivider
-
-                    if !store.activeWorkspace.tabStacks.isEmpty {
-                        tabStacksSection
-                        sectionDivider
-                    }
+                    activeTabsSection
+                    sectionDivider
 
                     if !store.pinnedBookmarks.isEmpty {
                         sectionLabel("Pinned", actionSystemName: nil, action: nil)
@@ -118,29 +115,107 @@ struct BrowserSidebar: View {
         }
     }
 
+    private var activeTabsSection: some View {
+        VStack(spacing: 0) {
+            sectionLabel("Tabs", actionSystemName: "plus") {
+                store.addTab()
+            }
+
+            ScrollView(.horizontal) {
+                HStack(spacing: 0) {
+                    ForEach(store.orderedTabs) { tab in
+                        compactTabLine(tab)
+                    }
+                }
+                .padding(.horizontal, 10)
+            }
+            .scrollIndicators(.hidden)
+            .frame(height: 30)
+        }
+    }
+
+    private func compactTabLine(_ tab: BrowserTabRecord) -> some View {
+        let active = store.selectedTabID(for: store.activePane) == tab.id
+        let dragged = store.tabDragState?.tabID == tab.id
+
+        return HStack(spacing: 3) {
+            if tab.isPinned {
+                Image(systemName: "pin.fill")
+                    .font(.system(size: 7))
+            } else if tab.stackID != nil {
+                Image(systemName: "square.stack.3d.up.fill")
+                    .font(.system(size: 7))
+            }
+
+            Text(tab.title)
+                .font(.system(size: 9, weight: active ? .semibold : .regular))
+                .lineLimit(1)
+
+            if let pane = store.paneShowing(tab.id), store.activeWorkspace.splitEnabled {
+                Text(store.activeWorkspace.splitAxis.badge(for: pane))
+                    .font(.system(size: 7, weight: .bold, design: .rounded))
+                    .foregroundStyle(theme.mutedLabel)
+            }
+        }
+        .foregroundStyle(active ? theme.label : theme.mutedLabel)
+        .padding(.horizontal, 7)
+        .frame(minWidth: 48, maxWidth: 124, minHeight: 28, maxHeight: 28)
+        .overlay(alignment: .bottom) {
+            Rectangle()
+                .fill(active ? theme.accent : theme.border.opacity(0.55))
+                .frame(height: active ? 1.5 : 0.5)
+        }
+        .opacity(dragged ? 0.4 : 1)
+        .contentShape(Rectangle())
+        .onTapGesture {
+            store.handleTabTap(tab.id)
+            if store.panePlacementPromptTabID == nil {
+                store.sidebarVisible = false
+            }
+        }
+        .tabDragGesture(store: store, tabID: tab.id)
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(.isButton)
+        .accessibilityLabel(tab.title)
+        .contextMenu {
+            Button(tab.isPinned ? "Unpin tab" : "Pin tab", systemImage: "pin") {
+                store.toggleTabPin(tab.id)
+            }
+            Button("Archive tab", systemImage: "archivebox") { store.archiveTab(tab.id) }
+            Button("Close tab", systemImage: "xmark", role: .destructive) { store.closeTab(tab.id) }
+        }
+        .popover(
+            isPresented: Binding(
+                get: { store.panePlacementPromptTabID == tab.id },
+                set: { if !$0 { store.panePlacementPromptTabID = nil } }
+            ),
+            arrowEdge: .top
+        ) {
+            PanePlacementChooser(store: store, tabID: tab.id)
+                .presentationCompactAdaptation(.popover)
+        }
+        .animation(.snappy(duration: 0.18), value: dragged)
+    }
+
     private func groupSection(_ group: ServiceGroup) -> some View {
-        let tabs = store.activeWorkspace.tabs.filter { $0.groupID == group.id && $0.stackID == nil }
-        let bookmarks = store.bookmarks.filter { $0.groupID == group.id && !$0.isPinned }
+        let bookmarks = store.visibleBookmarks.filter { $0.groupID == group.id && !$0.isPinned }
 
         return VStack(spacing: 0) {
             groupHeader(group)
 
-            if tabs.isEmpty && bookmarks.isEmpty {
+            if bookmarks.isEmpty {
                 emptyGroupRow
             } else {
-                ForEach(tabs) { tab in tabRow(tab) }
                 ForEach(bookmarks) { bookmark in bookmarkRow(bookmark) }
             }
         }
     }
 
     private var ungroupedSection: some View {
-        let tabs = store.activeWorkspace.tabs.filter { $0.groupID == nil && $0.stackID == nil }
-        let bookmarks = store.bookmarks.filter { $0.groupID == nil && !$0.isPinned }
+        let bookmarks = store.visibleBookmarks.filter { $0.groupID == nil && !$0.isPinned }
 
         return VStack(spacing: 0) {
             sectionLabel("Other", actionSystemName: nil, action: nil)
-            ForEach(tabs) { tab in tabRow(tab) }
             ForEach(bookmarks) { bookmark in bookmarkRow(bookmark) }
         }
     }
@@ -347,6 +422,29 @@ struct BrowserSidebar: View {
                 Button("None") { store.assignBookmark(bookmark.id, to: nil) }
                 ForEach(store.groups) { group in
                     Button(group.name) { store.assignBookmark(bookmark.id, to: group.id) }
+                }
+            }
+
+            Menu("Workspace") {
+                Button {
+                    store.assignBookmark(bookmark.id, toWorkspace: nil)
+                } label: {
+                    if bookmark.workspaceID == nil {
+                        Label("All workspaces", systemImage: "checkmark")
+                    } else {
+                        Text("All workspaces")
+                    }
+                }
+                ForEach(store.workspaces) { workspace in
+                    Button {
+                        store.assignBookmark(bookmark.id, toWorkspace: workspace.id)
+                    } label: {
+                        if bookmark.workspaceID == workspace.id {
+                            Label(workspace.name, systemImage: "checkmark")
+                        } else {
+                            Text(workspace.name)
+                        }
+                    }
                 }
             }
 
