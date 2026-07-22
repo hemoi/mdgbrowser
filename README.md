@@ -1,4 +1,4 @@
-# Modot Browser
+# Reto Browser
 
 A minimal service browser for iPad and iPhone, built with SwiftUI, independent `WKWebView` tab sessions, and App Intents.
 
@@ -26,10 +26,10 @@ A minimal service browser for iPad and iPhone, built with SwiftUI, independent `
 
 ```sh
 ruby scripts/generate_project.rb
-xcodebuild -project ModotBrowser.xcodeproj \
-  -scheme ModotBrowser \
+xcodebuild -project RetoBrowser.xcodeproj \
+  -scheme RetoBrowser \
   -destination 'platform=iOS Simulator,name=iPhone 17 Pro' \
   build
 ```
 
-The project targets iOS 26 to use App Intents' current `supportedModes` API. The UI is intentionally line-first, low-elevation, and shadcn-inspired.
+The project targets iOS 26 to use App Intents' current `supportedModes` API. The UI leans on standard system materials and controls for a native, Apple-default feel.

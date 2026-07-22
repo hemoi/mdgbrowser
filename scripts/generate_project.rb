@@ -4,7 +4,7 @@ require "fileutils"
 require "xcodeproj"
 
 ROOT = File.expand_path("..", __dir__)
-PROJECT_PATH = File.join(ROOT, "ModotBrowser.xcodeproj")
+PROJECT_PATH = File.join(ROOT, "RetoBrowser.xcodeproj")
 
 FileUtils.rm_rf(PROJECT_PATH)
 
@@ -12,9 +12,9 @@ project = Xcodeproj::Project.new(PROJECT_PATH)
 project.root_object.attributes["LastSwiftUpdateCheck"] = "2640"
 project.root_object.attributes["LastUpgradeCheck"] = "2640"
 
-app_target = project.new_target(:application, "ModotBrowser", :ios, "26.0")
+app_target = project.new_target(:application, "RetoBrowser", :ios, "26.0")
 swiftterm_target = project.new_target(:framework, "SwiftTerm", :ios, "26.0")
-test_target = project.new_target(:unit_test_bundle, "ModotBrowserTests", :ios, "26.0")
+test_target = project.new_target(:unit_test_bundle, "RetoBrowserTests", :ios, "26.0")
 test_target.add_dependency(app_target)
 app_target.add_dependency(swiftterm_target)
 app_target.frameworks_build_phase.add_file_reference(swiftterm_target.product_reference)
@@ -60,8 +60,8 @@ add_package_product(
 )
 
 sources_group = project.main_group.new_group("Sources", "Sources")
-app_group = sources_group.new_group("ModotBrowser", "ModotBrowser")
-Dir.glob(File.join(ROOT, "Sources/ModotBrowser/*.swift")).sort.each do |path|
+app_group = sources_group.new_group("RetoBrowser", "RetoBrowser")
+Dir.glob(File.join(ROOT, "Sources/RetoBrowser/*.swift")).sort.each do |path|
   reference = app_group.new_file(File.basename(path))
   app_target.source_build_phase.add_file_reference(reference)
 end
@@ -83,6 +83,10 @@ pets_reference = resources_group.new_file("Pets")
 pets_reference.last_known_file_type = "folder"
 app_target.resources_build_phase.add_file_reference(pets_reference)
 
+assets_reference = resources_group.new_file("Assets.xcassets")
+assets_reference.last_known_file_type = "folder.assetcatalog"
+app_target.resources_build_phase.add_file_reference(assets_reference)
+
 vendor_group = project.main_group.new_group("Vendor", "Vendor")
 cssh_group = vendor_group.new_group("CSSH", "CSSH")
 cssh_reference = cssh_group.new_file("CSSH.xcframework")
@@ -97,14 +101,15 @@ app_target.frameworks_build_phase.add_file_reference(cssh_reference)
 end
 
 tests_group = project.main_group.new_group("Tests", "Tests")
-app_tests_group = tests_group.new_group("ModotBrowserTests", "ModotBrowserTests")
-Dir.glob(File.join(ROOT, "Tests/ModotBrowserTests/*.swift")).sort.each do |path|
+app_tests_group = tests_group.new_group("RetoBrowserTests", "RetoBrowserTests")
+Dir.glob(File.join(ROOT, "Tests/RetoBrowserTests/*.swift")).sort.each do |path|
   reference = app_tests_group.new_file(File.basename(path))
   test_target.source_build_phase.add_file_reference(reference)
 end
 
 app_target.build_configurations.each do |configuration|
   settings = configuration.build_settings
+  settings["ASSETCATALOG_COMPILER_APPICON_NAME"] = "AppIcon"
   settings["ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS"] = "YES"
   settings["CURRENT_PROJECT_VERSION"] = "1"
   settings["ENABLE_PREVIEWS"] = "YES"
@@ -112,7 +117,7 @@ app_target.build_configurations.each do |configuration|
   settings["INFOPLIST_FILE"] = "Resources/Info.plist"
   settings["IPHONEOS_DEPLOYMENT_TARGET"] = "26.0"
   settings["MARKETING_VERSION"] = "1.0"
-  settings["PRODUCT_BUNDLE_IDENTIFIER"] = "dev.modot.ModotBrowser"
+  settings["PRODUCT_BUNDLE_IDENTIFIER"] = "dev.modot.RetoBrowser"
   settings["PRODUCT_NAME"] = "$(TARGET_NAME)"
   settings["SWIFT_STRICT_CONCURRENCY"] = "complete"
   settings["SWIFT_VERSION"] = "6.0"
@@ -139,16 +144,16 @@ test_target.build_configurations.each do |configuration|
   settings["BUNDLE_LOADER"] = "$(TEST_HOST)"
   settings["GENERATE_INFOPLIST_FILE"] = "YES"
   settings["IPHONEOS_DEPLOYMENT_TARGET"] = "26.0"
-  settings["PRODUCT_BUNDLE_IDENTIFIER"] = "dev.modot.ModotBrowserTests"
+  settings["PRODUCT_BUNDLE_IDENTIFIER"] = "dev.modot.RetoBrowserTests"
   settings["SWIFT_STRICT_CONCURRENCY"] = "complete"
   settings["SWIFT_VERSION"] = "6.0"
-  settings["TEST_HOST"] = "$(BUILT_PRODUCTS_DIR)/ModotBrowser.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/ModotBrowser"
+  settings["TEST_HOST"] = "$(BUILT_PRODUCTS_DIR)/RetoBrowser.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/RetoBrowser"
 end
 
 project.save
 
 scheme = Xcodeproj::XCScheme.new
 scheme.configure_with_targets(app_target, test_target, launch_target: true)
-scheme.save_as(PROJECT_PATH, "ModotBrowser", true)
+scheme.save_as(PROJECT_PATH, "RetoBrowser", true)
 
 puts "Generated #{PROJECT_PATH}"
