@@ -5,9 +5,9 @@ A minimal service browser for iPad and iPhone, built with SwiftUI, independent `
 ## Features
 
 - Persistent workspaces with compact, pinnable tabs
-- Adjustable left/right WebView split
+- Size-class-aware splits: iPhone stacks two panes top/bottom, iPad splits left/right and grows to a 2×2 grid of up to four panes, each divider independently draggable
 - Tailnet-friendly bookmark groups and pinned services
-- A menu-bar-thin command row and pinned-bookmark strip, with tabs kept in the sidebar
+- A single menu-bar-thin command row that takes its tint from the page's own background and flips between light and dark chrome to stay legible; bookmarks live in the menu and sidebar
 - On-device developer tools for console messages, DOM source, resource timing, and JavaScript evaluation
 - A hamburger sidebar for workspace, group, pin, and bookmark management
 - A deterministic offline start page with no fake service addresses

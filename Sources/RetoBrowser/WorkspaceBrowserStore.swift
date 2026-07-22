@@ -16,6 +16,11 @@ final class WorkspaceBrowserStore {
     var autoArchiveAfterDays: Int
 
     var activePane: BrowserPane = .primary
+    /// Mirrors the horizontal size class. Compact widths (phones) always
+    /// stack panes top/bottom and cap the layout at two panes, following
+    /// platform conventions; regular widths (iPad) default to left/right
+    /// and can grow to a 2×2 grid.
+    var layoutIsCompact = false
     var sidebarVisible = false
     var commandPalettePresented = false
     var presentedSheet: BrowserSheetDestination?
@@ -85,9 +90,41 @@ final class WorkspaceBrowserStore {
             guard let stackID = tab.stackID,
                   let stack = activeWorkspace.tabStacks.first(where: { $0.id == stackID }),
                   stack.isCollapsed else { return true }
-            if selectedTabID(for: .primary) == tab.id { return true }
-            if activeWorkspace.splitEnabled, selectedTabID(for: .secondary) == tab.id { return true }
+            if paneShowing(tab.id) != nil { return true }
             return activeWorkspace.tabs.first(where: { $0.stackID == stackID })?.id == tab.id
+        }
+    }
+
+    /// Panes the canvas actually renders. Compact widths clip the grid down
+    /// to the first two slots; the hidden tabs stay reachable from the strip.
+    var visiblePanes: [BrowserPane] {
+        let occupied = activeWorkspace.occupiedPanes
+        return layoutIsCompact ? Array(occupied.prefix(2)) : occupied
+    }
+
+    var effectiveSplitAxis: BrowserSplitAxis {
+        layoutIsCompact ? .vertical : activeWorkspace.splitAxis
+    }
+
+    var splitLayout: BrowserSplitLayout {
+        switch visiblePanes.count {
+        case ...1: .single
+        case 2: .pair(effectiveSplitAxis)
+        case 3: .triple
+        default: .quad
+        }
+    }
+
+    var canAddPane: Bool {
+        layoutIsCompact
+            ? !activeWorkspace.splitEnabled
+            : activeWorkspace.occupiedPanes.count < BrowserPane.slotOrder.count
+    }
+
+    func paneBadge(_ pane: BrowserPane) -> String {
+        switch splitLayout {
+        case .single, .pair: effectiveSplitAxis.badge(for: pane)
+        case .triple, .quad: pane.gridLabel
         }
     }
 
@@ -112,8 +149,7 @@ final class WorkspaceBrowserStore {
     }
 
     func selectedTabID(for pane: BrowserPane) -> UUID {
-        let workspace = activeWorkspace
-        return pane == .primary ? workspace.primaryTabID : (workspace.secondaryTabID ?? workspace.primaryTabID)
+        activeWorkspace.tabID(for: pane) ?? activeWorkspace.primaryTabID
     }
 
     func selectedTab(for pane: BrowserPane) -> BrowserTabRecord {
@@ -141,7 +177,7 @@ final class WorkspaceBrowserStore {
     }
 
     func setActivePane(_ pane: BrowserPane) {
-        guard pane == .primary || activeWorkspace.splitEnabled else { return }
+        guard pane == .primary || visiblePanes.contains(pane) else { return }
         activePane = pane
         touchTab(selectedTabID(for: pane))
     }
@@ -225,9 +261,9 @@ final class WorkspaceBrowserStore {
 
     /// The pane currently displaying the tab, if any.
     func paneShowing(_ tabID: UUID) -> BrowserPane? {
-        if selectedTabID(for: .primary) == tabID { return .primary }
-        if activeWorkspace.splitEnabled, selectedTabID(for: .secondary) == tabID { return .secondary }
-        return nil
+        if activeWorkspace.primaryTabID == tabID { return .primary }
+        guard activeWorkspace.splitEnabled else { return nil }
+        return visiblePanes.first(where: { activeWorkspace.tabID(for: $0) == tabID })
     }
 
     func selectTab(_ tabID: UUID, for pane: BrowserPane? = nil) {
@@ -272,7 +308,9 @@ final class WorkspaceBrowserStore {
         guard activeWorkspace.tabs.contains(where: { $0.id == tabID }) else { return }
         panePlacementPromptTabID = nil
         updateActiveWorkspace { workspace in
-            if let axis { workspace.splitAxis = axis }
+            // Compact widths only stack panes; an edge drop still works but
+            // always lands in the vertical arrangement.
+            if let axis { workspace.splitAxis = layoutIsCompact ? .vertical : axis }
             if workspace.splitEnabled {
                 setSelectedTab(tabID, for: pane, in: &workspace)
             } else {
@@ -296,7 +334,7 @@ final class WorkspaceBrowserStore {
                 workspace.tabs[index].lastAccessedAt = .now
             }
         }
-        activePane = pane
+        activePane = paneShowing(tabID) ?? pane
         hibernateOverflowSessions()
     }
 
@@ -388,6 +426,8 @@ final class WorkspaceBrowserStore {
         updateActiveWorkspace { workspace in
             if workspace.splitEnabled {
                 workspace.splitEnabled = false
+                workspace.tertiaryTabID = nil
+                workspace.quaternaryTabID = nil
                 activePane = .primary
                 return
             }
@@ -405,11 +445,73 @@ final class WorkspaceBrowserStore {
         }
     }
 
+    /// Fills the next free grid slot with a not-currently-visible tab (or a
+    /// fresh start tab). On compact widths this can only create the first
+    /// split, since the layout caps at two stacked panes.
+    func addPane() {
+        guard canAddPane else { return }
+        guard activeWorkspace.splitEnabled else {
+            toggleSplit()
+            return
+        }
+        updateActiveWorkspace { workspace in
+            guard let target = BrowserPane.slotOrder.first(where: { workspace.tabID(for: $0) == nil }) else { return }
+            let visibleIDs = Set(BrowserPane.slotOrder.compactMap { workspace.tabID(for: $0) })
+            let candidates = workspace.tabs.filter { !visibleIDs.contains($0.id) }
+            let tabID: UUID
+            if let existing = candidates.first(where: { $0.preferredPane == target }) ?? candidates.first {
+                tabID = existing.id
+            } else {
+                let tab = BrowserTabRecord.start()
+                workspace.tabs.append(tab)
+                tabID = tab.id
+            }
+            workspace.setTabID(tabID, for: target)
+            rememberPanePlacements(in: &workspace)
+            activePane = target
+        }
+        hibernateOverflowSessions()
+    }
+
+    /// Removes one pane from the layout (the tab itself stays open). Slots
+    /// compact down so occupancy stays contiguous.
+    func closePane(_ pane: BrowserPane) {
+        guard activeWorkspace.splitEnabled else { return }
+        updateActiveWorkspace { workspace in
+            if pane == .primary {
+                if let next = workspace.secondaryTabID {
+                    workspace.primaryTabID = next
+                    workspace.secondaryTabID = nil
+                }
+            } else {
+                workspace.setTabID(nil, for: pane)
+            }
+            normalizePanes(in: &workspace)
+            rememberPanePlacements(in: &workspace)
+        }
+        activePane = .primary
+    }
+
+    func toggleSplitAxis() {
+        guard !layoutIsCompact else { return }
+        updateActiveWorkspace { workspace in
+            workspace.splitAxis = workspace.splitAxis == .horizontal ? .vertical : .horizontal
+        }
+    }
+
     func setSplitRatio(_ ratio: Double, persistImmediately: Bool = true) {
         let clamped = min(max(ratio, 0.25), 0.75)
         let index = activeWorkspaceIndex
         guard workspaces[index].splitRatio != clamped else { return }
         workspaces[index].splitRatio = clamped
+        if persistImmediately { persist() }
+    }
+
+    func setSplitRowRatio(_ ratio: Double, persistImmediately: Bool = true) {
+        let clamped = min(max(ratio, 0.25), 0.75)
+        let index = activeWorkspaceIndex
+        guard workspaces[index].splitRowRatio != clamped else { return }
+        workspaces[index].splitRowRatio = clamped
         if persistImmediately { persist() }
     }
 
@@ -438,12 +540,22 @@ final class WorkspaceBrowserStore {
 
     func hibernateInactiveTabs() {
         syncAllSessionsIntoModel()
-        let selected = Set([
-            selectedTabID(for: .primary),
-            activeWorkspace.splitEnabled ? selectedTabID(for: .secondary) : nil
-        ].compactMap { $0 })
+        let selected = paneTabIDs(of: activeWorkspace)
         sessions = sessions.filter { selected.contains($0.key) }
         persist()
+    }
+
+    /// Tabs occupying any pane slot of the workspace, hidden compact slots
+    /// included, so a rotation or window resize never lands on a torn-down
+    /// session.
+    private func paneTabIDs(of workspace: BrowserWorkspace) -> Set<UUID> {
+        var ids: Set<UUID> = [workspace.primaryTabID]
+        if workspace.splitEnabled {
+            for pane in BrowserPane.slotOrder {
+                if let id = workspace.tabID(for: pane) { ids.insert(id) }
+            }
+        }
+        return ids
     }
 
     func autoArchiveStaleTabs(now: Date = .now) {
@@ -451,7 +563,7 @@ final class WorkspaceBrowserStore {
               let threshold = Calendar.current.date(byAdding: .day, value: -autoArchiveAfterDays, to: now) else { return }
         for workspaceIndex in workspaces.indices {
             var workspace = workspaces[workspaceIndex]
-            let selected = Set([workspace.primaryTabID, workspace.secondaryTabID].compactMap { $0 })
+            let selected = paneTabIDs(of: workspace)
             let stale = workspace.tabs.filter {
                 !$0.isPinned && !selected.contains($0.id) && $0.lastAccessedAt < threshold
             }
@@ -740,29 +852,27 @@ final class WorkspaceBrowserStore {
 
     private func setSelectedTab(_ tabID: UUID, for pane: BrowserPane, in workspace: inout BrowserWorkspace) {
         if workspace.splitEnabled {
-            let otherSelected = pane == .primary ? workspace.secondaryTabID : workspace.primaryTabID
-            if otherSelected == tabID {
-                let currentSelected = pane == .primary ? workspace.primaryTabID : workspace.secondaryTabID
-                if pane == .primary { workspace.secondaryTabID = currentSelected }
-                else if let currentSelected { workspace.primaryTabID = currentSelected }
+            // If the tab is already visible in another pane, swap the two
+            // panes' tabs — the same WKWebView must never mount twice.
+            for other in BrowserPane.slotOrder where other != pane && workspace.tabID(for: other) == tabID {
+                workspace.setTabID(workspace.tabID(for: pane), for: other)
             }
         }
-        if pane == .primary { workspace.primaryTabID = tabID }
-        else { workspace.secondaryTabID = tabID }
+        workspace.setTabID(tabID, for: pane)
         if workspace.splitEnabled {
+            normalizePanes(in: &workspace)
             rememberPanePlacements(in: &workspace)
         }
     }
 
-    /// Records which side each visible tab occupies so a tab that was once on
+    /// Records which slot each visible tab occupies so a tab that was once on
     /// the left keeps returning to the left.
     private func rememberPanePlacements(in workspace: inout BrowserWorkspace) {
-        if let index = workspace.tabs.firstIndex(where: { $0.id == workspace.primaryTabID }) {
-            workspace.tabs[index].preferredPane = .primary
-        }
-        if let secondaryID = workspace.secondaryTabID,
-           let index = workspace.tabs.firstIndex(where: { $0.id == secondaryID }) {
-            workspace.tabs[index].preferredPane = .secondary
+        for pane in workspace.occupiedPanes {
+            if let tabID = workspace.tabID(for: pane),
+               let index = workspace.tabs.firstIndex(where: { $0.id == tabID }) {
+                workspace.tabs[index].preferredPane = pane
+            }
         }
     }
 
@@ -795,17 +905,16 @@ final class WorkspaceBrowserStore {
             let fallback = workspace.tabs.first?.id
             if workspace.primaryTabID == tabID, let fallback { workspace.primaryTabID = fallback }
             if workspace.secondaryTabID == tabID {
-                workspace.secondaryTabID = workspace.tabs.first(where: { $0.id != workspace.primaryTabID })?.id
+                let occupied = paneTabIDs(of: workspace)
+                workspace.secondaryTabID = workspace.tabs.first(where: {
+                    $0.id != workspace.primaryTabID && !occupied.contains($0.id)
+                })?.id
             }
-            // Both panes hosting the same tab would hand one WKWebView to two
-            // view hosts, which re-parent it every layout pass and shake the
-            // whole canvas. Close the split instead.
-            if workspace.splitEnabled, workspace.secondaryTabID == nil || workspace.secondaryTabID == workspace.primaryTabID {
-                workspace.splitEnabled = false
-                workspace.secondaryTabID = nil
-            }
+            if workspace.tertiaryTabID == tabID { workspace.tertiaryTabID = nil }
+            if workspace.quaternaryTabID == tabID { workspace.quaternaryTabID = nil }
+            normalizePanes(in: &workspace)
         }
-        if !activeWorkspace.splitEnabled { activePane = .primary }
+        if !visiblePanes.contains(activePane) { activePane = .primary }
         sessions.removeValue(forKey: tabID)
     }
 
@@ -827,7 +936,7 @@ final class WorkspaceBrowserStore {
     private func hibernateOverflowSessions() {
         guard sessions.count > 6 else { return }
         syncAllSessionsIntoModel()
-        let protected = Set([selectedTabID(for: .primary), activeWorkspace.splitEnabled ? selectedTabID(for: .secondary) : nil].compactMap { $0 })
+        let protected = paneTabIDs(of: activeWorkspace)
         let candidates = sessions.keys.filter { !protected.contains($0) }.sorted { lhs, rhs in
             let left = workspaces.flatMap(\.tabs).first(where: { $0.id == lhs })?.lastAccessedAt ?? .distantPast
             let right = workspaces.flatMap(\.tabs).first(where: { $0.id == rhs })?.lastAccessedAt ?? .distantPast
@@ -838,11 +947,42 @@ final class WorkspaceBrowserStore {
 
     private func recreateVisibleSessions() {
         syncAllSessionsIntoModel()
-        sessions.removeValue(forKey: selectedTabID(for: .primary))
-        if activeWorkspace.splitEnabled {
-            sessions.removeValue(forKey: selectedTabID(for: .secondary))
+        for tabID in paneTabIDs(of: activeWorkspace) {
+            sessions.removeValue(forKey: tabID)
         }
         webViewRevision += 1
+    }
+
+    /// Restores the pane invariants after any slot mutation: every slot
+    /// points at a live tab, no tab occupies two slots (one WKWebView must
+    /// never mount twice), occupancy is contiguous, and a split without a
+    /// second pane collapses back to a single pane.
+    private func normalizePanes(in workspace: inout BrowserWorkspace) {
+        let validIDs = Set(workspace.tabs.map(\.id))
+        if !validIDs.contains(workspace.primaryTabID), let first = workspace.tabs.first {
+            workspace.primaryTabID = first.id
+        }
+        var seen: Set<UUID> = [workspace.primaryTabID]
+        for pane in BrowserPane.slotOrder.dropFirst() {
+            guard let id = workspace.tabID(for: pane) else { continue }
+            if !validIDs.contains(id) || seen.contains(id) {
+                workspace.setTabID(nil, for: pane)
+            } else {
+                seen.insert(id)
+            }
+        }
+        let extras = [workspace.secondaryTabID, workspace.tertiaryTabID, workspace.quaternaryTabID]
+            .compactMap { $0 }
+        workspace.secondaryTabID = extras.count > 0 ? extras[0] : nil
+        workspace.tertiaryTabID = extras.count > 1 ? extras[1] : nil
+        workspace.quaternaryTabID = extras.count > 2 ? extras[2] : nil
+        if workspace.splitEnabled, workspace.secondaryTabID == nil {
+            workspace.splitEnabled = false
+        }
+        if !workspace.splitEnabled {
+            workspace.tertiaryTabID = nil
+            workspace.quaternaryTabID = nil
+        }
     }
 
     private func normalizeState() {
@@ -854,27 +994,14 @@ final class WorkspaceBrowserStore {
                 workspaces[index].tabs = [tab]
                 workspaces[index].primaryTabID = tab.id
             }
-            if !workspaces[index].tabs.contains(where: { $0.id == workspaces[index].primaryTabID }) {
-                workspaces[index].primaryTabID = workspaces[index].tabs[0].id
-            }
-            if let secondaryID = workspaces[index].secondaryTabID,
-               !workspaces[index].tabs.contains(where: { $0.id == secondaryID }) {
-                workspaces[index].secondaryTabID = nil
-                workspaces[index].splitEnabled = false
-            }
-            // A split whose panes share one tab would mount the same
-            // WKWebView twice; recover by disabling the split.
-            if workspaces[index].splitEnabled,
-               workspaces[index].secondaryTabID == nil || workspaces[index].secondaryTabID == workspaces[index].primaryTabID {
-                workspaces[index].secondaryTabID = nil
-                workspaces[index].splitEnabled = false
-            }
+            normalizePanes(in: &workspaces[index])
             let stackIDs = Set(workspaces[index].tabStacks.map(\.id))
             for tabIndex in workspaces[index].tabs.indices
             where workspaces[index].tabs[tabIndex].stackID.map({ !stackIDs.contains($0) }) ?? false {
                 workspaces[index].tabs[tabIndex].stackID = nil
             }
             workspaces[index].splitRatio = min(max(workspaces[index].splitRatio, 0.25), 0.75)
+            workspaces[index].splitRowRatio = min(max(workspaces[index].splitRowRatio, 0.25), 0.75)
         }
     }
 

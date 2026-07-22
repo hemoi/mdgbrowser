@@ -3,10 +3,30 @@ import Foundation
 enum BrowserPane: String, Codable, CaseIterable, Identifiable, Sendable {
     case primary
     case secondary
+    case tertiary
+    case quaternary
 
     var id: String { rawValue }
-    var other: BrowserPane { self == .primary ? .secondary : .primary }
-    var compactLabel: String { self == .primary ? "L" : "R" }
+    var other: BrowserPane {
+        switch self {
+        case .primary: .secondary
+        case .secondary: .primary
+        case .tertiary: .quaternary
+        case .quaternary: .tertiary
+        }
+    }
+    /// Slot order used to keep occupancy contiguous (no empty slot before a
+    /// filled one).
+    static let slotOrder: [BrowserPane] = [.primary, .secondary, .tertiary, .quaternary]
+    /// Position label in the 2×2 grid, filled row-major.
+    var gridLabel: String {
+        switch self {
+        case .primary: "1"
+        case .secondary: "2"
+        case .tertiary: "3"
+        case .quaternary: "4"
+        }
+    }
 }
 
 enum BrowserSplitAxis: String, Codable, Sendable {
@@ -19,8 +39,21 @@ enum BrowserSplitAxis: String, Codable, Sendable {
         case (.horizontal, .secondary): "R"
         case (.vertical, .primary): "T"
         case (.vertical, .secondary): "B"
+        default: pane.gridLabel
         }
     }
+}
+
+/// How the canvas is carved up, derived from the occupied pane slots.
+/// Compact-width devices only ever see `.single` or a vertical `.pair`
+/// (stacked panes, per platform conventions); the grid shapes are iPad-only.
+enum BrowserSplitLayout: Equatable, Sendable {
+    case single
+    case pair(BrowserSplitAxis)
+    /// Three panes: two columns on top, the third spanning the bottom row.
+    case triple
+    /// Four panes in a 2×2 grid.
+    case quad
 }
 
 /// Which edge of the canvas a dragged tab was dropped on. Left/right create a
@@ -128,8 +161,12 @@ struct BrowserWorkspace: Codable, Equatable, Identifiable, Sendable {
     var tabs: [BrowserTabRecord]
     var primaryTabID: UUID
     var secondaryTabID: UUID?
+    var tertiaryTabID: UUID?
+    var quaternaryTabID: UUID?
     var splitEnabled: Bool
     var splitRatio: Double
+    /// Top-row share of the height when three or four panes form a grid.
+    var splitRowRatio: Double
     var splitAxis: BrowserSplitAxis
     var tabStacks: [BrowserTabStack]
     var archivedTabs: [StoredTabRecord]
@@ -144,6 +181,9 @@ struct BrowserWorkspace: Codable, Equatable, Identifiable, Sendable {
         splitEnabled: Bool,
         splitRatio: Double,
         splitAxis: BrowserSplitAxis = .horizontal,
+        tertiaryTabID: UUID? = nil,
+        quaternaryTabID: UUID? = nil,
+        splitRowRatio: Double = 0.5,
         tabStacks: [BrowserTabStack] = [],
         archivedTabs: [StoredTabRecord] = [],
         recentlyClosedTabs: [StoredTabRecord] = []
@@ -153,12 +193,41 @@ struct BrowserWorkspace: Codable, Equatable, Identifiable, Sendable {
         self.tabs = tabs
         self.primaryTabID = primaryTabID
         self.secondaryTabID = secondaryTabID
+        self.tertiaryTabID = tertiaryTabID
+        self.quaternaryTabID = quaternaryTabID
         self.splitEnabled = splitEnabled
         self.splitRatio = splitRatio
+        self.splitRowRatio = splitRowRatio
         self.splitAxis = splitAxis
         self.tabStacks = tabStacks
         self.archivedTabs = archivedTabs
         self.recentlyClosedTabs = recentlyClosedTabs
+    }
+
+    func tabID(for pane: BrowserPane) -> UUID? {
+        switch pane {
+        case .primary: primaryTabID
+        case .secondary: secondaryTabID
+        case .tertiary: tertiaryTabID
+        case .quaternary: quaternaryTabID
+        }
+    }
+
+    mutating func setTabID(_ tabID: UUID?, for pane: BrowserPane) {
+        switch pane {
+        case .primary: if let tabID { primaryTabID = tabID }
+        case .secondary: secondaryTabID = tabID
+        case .tertiary: tertiaryTabID = tabID
+        case .quaternary: quaternaryTabID = tabID
+        }
+    }
+
+    /// Panes that currently host a tab, in slot order. Occupancy is kept
+    /// contiguous by `normalizePanes`, so this is always a prefix of
+    /// `BrowserPane.slotOrder`.
+    var occupiedPanes: [BrowserPane] {
+        guard splitEnabled else { return [.primary] }
+        return BrowserPane.slotOrder.filter { tabID(for: $0) != nil }
     }
 
     static func fresh(name: String, now: Date = .now) -> BrowserWorkspace {
@@ -175,7 +244,8 @@ struct BrowserWorkspace: Codable, Equatable, Identifiable, Sendable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, name, tabs, primaryTabID, secondaryTabID, splitEnabled, splitRatio, splitAxis
+        case id, name, tabs, primaryTabID, secondaryTabID, tertiaryTabID, quaternaryTabID
+        case splitEnabled, splitRatio, splitRowRatio, splitAxis
         case tabStacks, archivedTabs, recentlyClosedTabs
     }
 
@@ -186,8 +256,11 @@ struct BrowserWorkspace: Codable, Equatable, Identifiable, Sendable {
         tabs = try values.decode([BrowserTabRecord].self, forKey: .tabs)
         primaryTabID = try values.decode(UUID.self, forKey: .primaryTabID)
         secondaryTabID = try values.decodeIfPresent(UUID.self, forKey: .secondaryTabID)
+        tertiaryTabID = try values.decodeIfPresent(UUID.self, forKey: .tertiaryTabID)
+        quaternaryTabID = try values.decodeIfPresent(UUID.self, forKey: .quaternaryTabID)
         splitEnabled = try values.decodeIfPresent(Bool.self, forKey: .splitEnabled) ?? false
         splitRatio = try values.decodeIfPresent(Double.self, forKey: .splitRatio) ?? 0.5
+        splitRowRatio = try values.decodeIfPresent(Double.self, forKey: .splitRowRatio) ?? 0.5
         splitAxis = try values.decodeIfPresent(BrowserSplitAxis.self, forKey: .splitAxis) ?? .horizontal
         tabStacks = try values.decodeIfPresent([BrowserTabStack].self, forKey: .tabStacks) ?? []
         archivedTabs = try values.decodeIfPresent([StoredTabRecord].self, forKey: .archivedTabs) ?? []

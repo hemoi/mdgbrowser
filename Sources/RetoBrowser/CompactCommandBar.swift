@@ -3,36 +3,40 @@ import SwiftUI
 struct CompactCommandBar: View {
     @Environment(BrowserTheme.self) private var theme
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    @Environment(\.colorScheme) private var systemColorScheme
 
     let store: WorkspaceBrowserStore
     let terminalStore: TerminalWorkspaceStore
     let aiStore: BrowserAIStore
 
     var body: some View {
-        VStack(spacing: 0) {
-            Group {
-                if store.commandBarCollapsed {
-                    collapsedBar
-                } else {
-                    expandedBar
-                }
+        let appearance = PageChromeAppearance.resolve(store.session(for: store.activePane).pageBackgroundColor)
+
+        return Group {
+            if store.commandBarCollapsed {
+                collapsedBar
+            } else {
+                expandedBar
             }
-            .frame(height: 28)
-
-            Rectangle()
-                .fill(theme.border)
-                .frame(height: 0.5)
-
-            bookmarkBar
-                .frame(height: 19.5)
         }
         .frame(height: barHeight)
-        .background(theme.background)
+        // The bar reads as an extension of the page: its tint is the site's
+        // own background, and the matching interface style keeps the system
+        // label colors on top of it legible.
+        .background {
+            if let tint = appearance.tint {
+                tint
+            } else {
+                Rectangle().fill(.bar)
+            }
+        }
+        .environment(\.colorScheme, appearance.colorScheme ?? systemColorScheme)
         .overlay(alignment: .bottom) {
             Rectangle()
-                .fill(theme.border)
+                .fill(theme.border.opacity(appearance.tint == nil ? 1 : 0.4))
                 .frame(height: 0.5)
         }
+        .animation(.easeOut(duration: 0.22), value: appearance)
     }
 
     private var collapsedBar: some View {
@@ -55,7 +59,7 @@ struct CompactCommandBar: View {
                 store.commandPalettePresented = true
             }
 
-            if store.activeWorkspace.splitEnabled {
+            if store.splitLayout != .single {
                 PaneFocusControl(store: store)
             }
 
@@ -91,82 +95,10 @@ struct CompactCommandBar: View {
         .padding(.horizontal, 4)
     }
 
+    // Bookmarks live in the hamburger menu and the sidebar; the bar itself
+    // stays a single row.
     private var barHeight: CGFloat {
-        48
-    }
-
-    private var bookmarkBar: some View {
-        HStack(spacing: 0) {
-            AppBarIconButton(
-                systemName: store.isBookmarked(store.currentPageURL) ? "star.fill" : "star",
-                accessibilityLabel: store.isBookmarked(store.currentPageURL) ? "Remove bookmark" : "Bookmark this page"
-            ) {
-                store.quickToggleBookmark()
-            }
-
-            Rectangle()
-                .fill(theme.border)
-                .frame(width: 0.5, height: 12)
-
-            ScrollView(.horizontal) {
-                HStack(spacing: 12) {
-                    if store.pinnedBookmarks.isEmpty {
-                        Text("BOOKMARKS")
-                            .font(.system(size: 8, weight: .semibold))
-                            .tracking(0.5)
-                            .foregroundStyle(theme.mutedLabel)
-                    } else {
-                        ForEach(store.pinnedBookmarks) { bookmark in
-                            Button {
-                                store.openBookmark(bookmark.id)
-                            } label: {
-                                HStack(spacing: 4) {
-                                    Circle()
-                                        .fill(bookmarkStatusColor(bookmark.id))
-                                        .frame(width: 4, height: 4)
-                                    Text(bookmark.title)
-                                        .font(.system(size: 9))
-                                        .lineLimit(1)
-                                }
-                                .foregroundStyle(theme.label)
-                            }
-                            .buttonStyle(.plain)
-                            .contextMenu {
-                                Button("Unpin bookmark", systemImage: "pin.slash") {
-                                    store.toggleBookmarkPin(bookmark.id)
-                                }
-                                Button("Delete bookmark", systemImage: "trash", role: .destructive) {
-                                    store.removeBookmark(bookmark.id)
-                                }
-                            }
-                        }
-                    }
-                }
-                .padding(.horizontal, 8)
-            }
-            .scrollIndicators(.hidden)
-            .frame(maxWidth: .infinity)
-
-            Menu {
-                bookmarkMenuItems
-            } label: {
-                Image(systemName: "chevron.down")
-                    .font(.system(size: 8, weight: .bold))
-                    .foregroundStyle(theme.mutedLabel)
-                    .frame(width: 24, height: 19)
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("All bookmarks")
-        }
-    }
-
-    private func bookmarkStatusColor(_ bookmarkID: UUID) -> Color {
-        switch store.statusMonitor.state(for: bookmarkID) {
-        case .online: .green
-        case .offline: .red
-        case .checking: .orange
-        case .idle: theme.mutedLabel.opacity(0.5)
-        }
+        38
     }
 
     @ViewBuilder
@@ -235,12 +167,34 @@ struct CompactCommandBar: View {
                 bookmarksSubmenu
             }
 
-            Section {
+            Section("Layout") {
                 Button(
                     store.activeWorkspace.splitEnabled ? "Close split view" : "Split view",
                     systemImage: "rectangle.split.2x1"
                 ) {
                     store.toggleSplit()
+                }
+
+                Button("Add pane", systemImage: "plus.rectangle") { store.addPane() }
+                    .disabled(!store.canAddPane)
+
+                if store.splitLayout != .single {
+                    Button("Close this pane", systemImage: "minus.rectangle") {
+                        store.closePane(store.activePane)
+                    }
+                }
+
+                // Compact widths always stack panes, so the axis toggle only
+                // makes sense on a regular-width canvas.
+                if !store.layoutIsCompact, case .pair = store.splitLayout {
+                    Button(
+                        store.activeWorkspace.splitAxis == .horizontal ? "Stack panes" : "Side-by-side panes",
+                        systemImage: store.activeWorkspace.splitAxis == .horizontal
+                            ? "rectangle.split.1x2"
+                            : "rectangle.split.2x1"
+                    ) {
+                        store.toggleSplitAxis()
+                    }
                 }
 
                 Button(
@@ -309,12 +263,12 @@ struct CompactCommandBar: View {
         } label: {
             Image(systemName: "line.3.horizontal")
                 .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(theme.label)
                 .frame(width: 26, height: 26)
+                .contentShape(Rectangle())
         }
         .menuStyle(.button)
-        .buttonStyle(.glass)
-        .buttonBorderShape(.circle)
-        .controlSize(.mini)
+        .buttonStyle(.plain)
         .accessibilityLabel("Browser menu")
         .accessibilityIdentifier("browser.menu")
     }
@@ -372,20 +326,26 @@ struct PanePlacementChooser: View {
     let tabID: UUID
 
     var body: some View {
-        let axis = store.activeWorkspace.splitAxis
-
         HStack(spacing: 6) {
-            paneButton(
-                .primary,
-                systemName: axis == .horizontal ? "rectangle.lefthalf.filled" : "rectangle.tophalf.filled"
-            )
-            paneButton(
-                .secondary,
-                systemName: axis == .horizontal ? "rectangle.righthalf.filled" : "rectangle.bottomhalf.filled"
-            )
+            ForEach(store.visiblePanes) { pane in
+                paneButton(pane, systemName: symbol(for: pane))
+            }
         }
         .padding(8)
         .presentationBackground(theme.background)
+    }
+
+    private func symbol(for pane: BrowserPane) -> String {
+        switch store.splitLayout {
+        case .single:
+            return "rectangle"
+        case .pair(let axis) where axis == .horizontal:
+            return pane == .primary ? "rectangle.lefthalf.filled" : "rectangle.righthalf.filled"
+        case .pair:
+            return pane == .primary ? "rectangle.tophalf.filled" : "rectangle.bottomhalf.filled"
+        case .triple, .quad:
+            return "square.grid.2x2"
+        }
     }
 
     private func paneButton(_ pane: BrowserPane, systemName: String) -> some View {
@@ -395,14 +355,19 @@ struct PanePlacementChooser: View {
             VStack(spacing: 3) {
                 Image(systemName: systemName)
                     .font(.system(size: 15, weight: .medium))
-                Text(store.activeWorkspace.splitAxis.badge(for: pane))
+                Text(store.paneBadge(pane))
                     .font(.system(size: 10, weight: .bold, design: .rounded))
             }
             .frame(width: 52, height: 46)
+            .foregroundStyle(theme.label)
+            .background(theme.raisedBackground, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .stroke(theme.border, lineWidth: 0.75)
+            }
         }
-        .buttonStyle(.glass)
-        .buttonBorderShape(.roundedRectangle(radius: 10))
-        .accessibilityLabel(pane == .primary ? "Show in first pane" : "Show in second pane")
+        .buttonStyle(.plain)
+        .accessibilityLabel("Show in pane \(pane.gridLabel)")
     }
 }
 
@@ -484,6 +449,8 @@ private struct CompactAddressField: View {
 }
 
 private struct CompactNavigationControl: View {
+    @Environment(BrowserTheme.self) private var theme
+
     let store: WorkspaceBrowserStore
 
     var body: some View {
@@ -509,11 +476,12 @@ private struct CompactNavigationControl: View {
             Image(systemName: systemName)
                 .font(.system(size: 12, weight: .semibold))
                 .frame(width: 24, height: 24)
+                .foregroundStyle(theme.label)
+                .contentShape(Rectangle())
         }
-        .buttonStyle(.glass)
-        .buttonBorderShape(.circle)
-        .controlSize(.mini)
+        .buttonStyle(.plain)
         .disabled(disabled)
+        .opacity(disabled ? 0.3 : 1)
         .accessibilityLabel(label)
     }
 }
@@ -522,22 +490,26 @@ private struct PaneFocusControl: View {
     let store: WorkspaceBrowserStore
 
     var body: some View {
+        let panes = store.visiblePanes
+
         Picker("Active pane", selection: Binding(
             get: { store.activePane },
             set: { store.setActivePane($0) }
         )) {
-            ForEach(BrowserPane.allCases) { pane in
-                Text(store.activeWorkspace.splitAxis.badge(for: pane)).tag(pane)
+            ForEach(panes) { pane in
+                Text(store.paneBadge(pane)).tag(pane)
             }
         }
         .pickerStyle(.segmented)
         .controlSize(.mini)
-        .frame(width: 64)
+        .frame(width: CGFloat(panes.count) * 30)
         .accessibilityLabel("Active split pane")
     }
 }
 
 private struct AppBarIconButton: View {
+    @Environment(BrowserTheme.self) private var theme
+
     let systemName: String
     let accessibilityLabel: String
     var selected = false
@@ -549,12 +521,13 @@ private struct AppBarIconButton: View {
             Image(systemName: systemName)
                 .font(.system(size: 12, weight: .semibold))
                 .frame(width: 26, height: 26)
+                .foregroundStyle(selected ? theme.background : theme.label)
+                .background(selected ? theme.accent : .clear, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                .contentShape(Rectangle())
         }
-        .buttonStyle(.glass)
-        .buttonBorderShape(.circle)
-        .controlSize(.mini)
-        .tint(selected ? Color.accentColor : nil)
+        .buttonStyle(.plain)
         .disabled(disabled)
+        .opacity(disabled ? 0.35 : 1)
         .accessibilityLabel(accessibilityLabel)
     }
 }

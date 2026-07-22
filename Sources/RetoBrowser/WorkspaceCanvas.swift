@@ -7,27 +7,23 @@ struct WorkspaceCanvas: View {
 
     let store: WorkspaceBrowserStore
 
+    static let dividerSpan: CGFloat = 12
+
     var body: some View {
         GeometryReader { geometry in
-            if store.activeWorkspace.splitEnabled {
-                let axis = store.activeWorkspace.splitAxis
-                let dividerSpan: CGFloat = 12
-                // Whole-point sizes keep WKWebView off fractional pixel
-                // boundaries, which otherwise force continuous re-rasterizing
-                // that reads as on-screen shaking.
-                let totalSpan = max((axis == .horizontal ? geometry.size.width : geometry.size.height) - dividerSpan, 1)
-                let primarySpan = (totalSpan * store.activeWorkspace.splitRatio).rounded()
-
-                splitLayout(
-                    axis: axis,
-                    primarySpan: primarySpan,
-                    secondarySpan: totalSpan - primarySpan,
-                    totalSpan: totalSpan
-                )
-                .animation(reduceMotion ? nil : .snappy(duration: 0.2), value: store.activePane)
-            } else {
-                BrowserPaneView(store: store, pane: .primary)
+            Group {
+                switch store.splitLayout {
+                case .single:
+                    BrowserPaneView(store: store, pane: .primary)
+                case .pair(let axis):
+                    pairLayout(axis: axis, size: geometry.size)
+                case .triple:
+                    tripleLayout(size: geometry.size)
+                case .quad:
+                    quadLayout(size: geometry.size)
+                }
             }
+            .animation(reduceMotion ? nil : .snappy(duration: 0.2), value: store.activePane)
         }
         .background(theme.background)
         // WKWebView manages its own keyboard insets. Letting SwiftUI also
@@ -37,34 +33,98 @@ struct WorkspaceCanvas: View {
         .ignoresSafeArea(.keyboard, edges: .bottom)
     }
 
-    @ViewBuilder
-    private func splitLayout(
-        axis: BrowserSplitAxis,
-        primarySpan: CGFloat,
-        secondarySpan: CGFloat,
-        totalSpan: CGFloat
-    ) -> some View {
-        if axis == .horizontal {
-            HStack(spacing: 0) {
-                BrowserPaneView(store: store, pane: .primary)
-                    .frame(width: primarySpan)
+    /// Whole-point sizes keep WKWebView off fractional pixel boundaries,
+    /// which otherwise force continuous re-rasterizing that reads as
+    /// on-screen shaking.
+    private func spans(total: CGFloat, ratio: Double) -> (CGFloat, CGFloat) {
+        let usable = max(total - Self.dividerSpan, 1)
+        let leading = (usable * ratio).rounded()
+        return (leading, usable - leading)
+    }
 
-                AdjustableSplitHandle(store: store, axis: axis, totalSpan: totalSpan)
+    private func pairLayout(axis: BrowserSplitAxis, size: CGSize) -> some View {
+        let total = axis == .horizontal ? size.width : size.height
+        let (first, second) = spans(total: total, ratio: store.activeWorkspace.splitRatio)
 
-                BrowserPaneView(store: store, pane: .secondary)
-                    .frame(width: secondarySpan)
-            }
-        } else {
-            VStack(spacing: 0) {
-                BrowserPaneView(store: store, pane: .primary)
-                    .frame(height: primarySpan)
+        return AxisStack(axis: axis) {
+            BrowserPaneView(store: store, pane: .primary)
+                .paneSpan(first, along: axis)
 
-                AdjustableSplitHandle(store: store, axis: axis, totalSpan: totalSpan)
+            AdjustableSplitHandle(store: store, axis: axis, totalSpan: first + second, dimension: .column)
 
-                BrowserPaneView(store: store, pane: .secondary)
-                    .frame(height: secondarySpan)
-            }
+            BrowserPaneView(store: store, pane: .secondary)
+                .paneSpan(second, along: axis)
         }
+    }
+
+    // Two panes on top, the third spanning the bottom row.
+    private func tripleLayout(size: CGSize) -> some View {
+        let (topHeight, bottomHeight) = spans(total: size.height, ratio: store.activeWorkspace.splitRowRatio)
+        let (leftWidth, rightWidth) = spans(total: size.width, ratio: store.activeWorkspace.splitRatio)
+
+        return VStack(spacing: 0) {
+            HStack(spacing: 0) {
+                BrowserPaneView(store: store, pane: .primary).frame(width: leftWidth)
+                AdjustableSplitHandle(store: store, axis: .horizontal, totalSpan: leftWidth + rightWidth, dimension: .column)
+                BrowserPaneView(store: store, pane: .secondary).frame(width: rightWidth)
+            }
+            .frame(height: topHeight)
+
+            AdjustableSplitHandle(store: store, axis: .vertical, totalSpan: topHeight + bottomHeight, dimension: .row)
+
+            BrowserPaneView(store: store, pane: .tertiary)
+                .frame(height: bottomHeight)
+        }
+    }
+
+    private func quadLayout(size: CGSize) -> some View {
+        let (topHeight, bottomHeight) = spans(total: size.height, ratio: store.activeWorkspace.splitRowRatio)
+        let (leftWidth, rightWidth) = spans(total: size.width, ratio: store.activeWorkspace.splitRatio)
+
+        return VStack(spacing: 0) {
+            quadRow(leading: .primary, trailing: .secondary, leftWidth: leftWidth, rightWidth: rightWidth)
+                .frame(height: topHeight)
+
+            AdjustableSplitHandle(store: store, axis: .vertical, totalSpan: topHeight + bottomHeight, dimension: .row)
+
+            quadRow(leading: .tertiary, trailing: .quaternary, leftWidth: leftWidth, rightWidth: rightWidth)
+                .frame(height: bottomHeight)
+        }
+    }
+
+    private func quadRow(
+        leading: BrowserPane,
+        trailing: BrowserPane,
+        leftWidth: CGFloat,
+        rightWidth: CGFloat
+    ) -> some View {
+        HStack(spacing: 0) {
+            BrowserPaneView(store: store, pane: leading).frame(width: leftWidth)
+            AdjustableSplitHandle(store: store, axis: .horizontal, totalSpan: leftWidth + rightWidth, dimension: .column)
+            BrowserPaneView(store: store, pane: trailing).frame(width: rightWidth)
+        }
+    }
+}
+
+private struct AxisStack<Content: View>: View {
+    let axis: BrowserSplitAxis
+    @ViewBuilder let content: Content
+
+    var body: some View {
+        if axis == .horizontal {
+            HStack(spacing: 0) { content }
+        } else {
+            VStack(spacing: 0) { content }
+        }
+    }
+}
+
+private extension View {
+    func paneSpan(_ span: CGFloat, along axis: BrowserSplitAxis) -> some View {
+        frame(
+            width: axis == .horizontal ? span : nil,
+            height: axis == .horizontal ? nil : span
+        )
     }
 }
 
@@ -95,7 +155,7 @@ private struct BrowserPaneView: View {
                     .accessibilityLabel("Loading page")
             }
 
-            if store.activeWorkspace.splitEnabled && store.activePane == pane {
+            if store.splitLayout != .single && store.activePane == pane {
                 Rectangle()
                     .fill(theme.tailnet)
                     .frame(height: 2)
@@ -103,13 +163,17 @@ private struct BrowserPaneView: View {
             }
         }
         .overlay(alignment: .topLeading) {
-            PaneMoveHandle(store: store, tabID: tab.id)
-                .padding(.leading, 8)
-                .padding(.top, 10)
+            // With a single pane there is nothing to rearrange, and the
+            // handle would just sit on top of the page.
+            if store.splitLayout != .single {
+                PaneMoveHandle(store: store, tabID: tab.id)
+                    .padding(.leading, 8)
+                    .padding(.top, 10)
+            }
         }
         .background(theme.background)
         .overlay {
-            if store.activeWorkspace.splitEnabled {
+            if store.splitLayout != .single {
                 Rectangle()
                     .stroke(store.activePane == pane ? theme.label.opacity(0.24) : theme.border.opacity(0.7), lineWidth: 0.5)
                     .allowsHitTesting(false)
@@ -211,12 +275,29 @@ private struct PaneMoveHandle: View {
 }
 
 private struct AdjustableSplitHandle: View {
+    /// Which ratio the handle drives: the column split (left/right share) or
+    /// the row split (top/bottom share of a grid).
+    enum Dimension { case column, row }
+
     @Environment(BrowserTheme.self) private var theme
     @State private var dragStartRatio: Double?
 
     let store: WorkspaceBrowserStore
     let axis: BrowserSplitAxis
     let totalSpan: CGFloat
+    let dimension: Dimension
+
+    private var ratio: Double {
+        dimension == .column ? store.activeWorkspace.splitRatio : store.activeWorkspace.splitRowRatio
+    }
+
+    private func setRatio(_ value: Double, persistImmediately: Bool) {
+        if dimension == .column {
+            store.setSplitRatio(value, persistImmediately: persistImmediately)
+        } else {
+            store.setSplitRowRatio(value, persistImmediately: persistImmediately)
+        }
+    }
 
     var body: some View {
         ZStack {
@@ -243,17 +324,12 @@ private struct AdjustableSplitHandle: View {
         .gesture(
             DragGesture(minimumDistance: 0)
                 .onChanged { value in
-                    if dragStartRatio == nil {
-                        dragStartRatio = store.activeWorkspace.splitRatio
-                    }
-                    let start = dragStartRatio ?? store.activeWorkspace.splitRatio
+                    if dragStartRatio == nil { dragStartRatio = ratio }
+                    let start = dragStartRatio ?? ratio
                     let translation = axis == .horizontal ? value.translation.width : value.translation.height
                     // Persisting every tick JSON-encodes the full snapshot on
                     // the main thread mid-drag; defer it to the gesture end.
-                    store.setSplitRatio(
-                        start + Double(translation / totalSpan),
-                        persistImmediately: false
-                    )
+                    setRatio(start + Double(translation / totalSpan), persistImmediately: false)
                 }
                 .onEnded { _ in
                     dragStartRatio = nil
@@ -263,14 +339,14 @@ private struct AdjustableSplitHandle: View {
         .accessibilityRepresentation {
             Slider(
                 value: Binding(
-                    get: { store.activeWorkspace.splitRatio },
-                    set: { store.setSplitRatio($0) }
+                    get: { ratio },
+                    set: { setRatio($0, persistImmediately: true) }
                 ),
                 in: 0.25...0.75,
                 step: 0.05
             )
             .accessibilityLabel("Resize split view")
-            .accessibilityValue("\(Int(store.activeWorkspace.splitRatio * 100)) percent \(axis == .horizontal ? "left" : "top")")
+            .accessibilityValue("\(Int(ratio * 100)) percent \(axis == .horizontal ? "left" : "top")")
         }
     }
 }

@@ -22,12 +22,14 @@ struct BrowserView: View {
                 CompactCommandBar(store: store, terminalStore: terminalStore, aiStore: aiStore)
                 WorkspaceCanvas(store: store)
                     .overlay {
-                        BrowserPetOverlay(
-                            browserStore: store,
-                            petStore: petStore,
-                            aiStore: aiStore,
-                            terminalStore: terminalStore
-                        )
+                        if BrowserFeatureFlags.petEnabled {
+                            BrowserPetOverlay(
+                                browserStore: store,
+                                petStore: petStore,
+                                aiStore: aiStore,
+                                terminalStore: terminalStore
+                            )
+                        }
                     }
             }
             .background(theme.background)
@@ -138,14 +140,19 @@ struct BrowserView: View {
                 .presentationDetents(browserSheetDetents)
                 .presentationDragIndicator(.visible)
         }
+        .onChange(of: horizontalSizeClass, initial: true) {
+            store.layoutIsCompact = horizontalSizeClass == .compact
+        }
         .task {
             // tmux @modot_* events (optional, hook-provided) surface as pet
             // speech bubbles tied to the terminal tab they came from.
-            terminalStore.agentEventHandler = { notification in
-                petStore.showMessage(
-                    notification.petMessageText,
-                    sourceTerminalTabID: notification.tabID
-                )
+            if BrowserFeatureFlags.petEnabled {
+                terminalStore.agentEventHandler = { notification in
+                    petStore.showMessage(
+                        notification.petMessageText,
+                        sourceTerminalTabID: notification.tabID
+                    )
+                }
             }
             handlePendingIntent()
             await store.prepareWebFeatures()

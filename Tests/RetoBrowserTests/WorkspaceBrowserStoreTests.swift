@@ -231,6 +231,75 @@ final class WorkspaceBrowserStoreTests: XCTestCase {
         XCTAssertEqual(store.activePane, .primary)
     }
 
+    func testAddPaneFillsGridUpToFourOnRegularWidth() {
+        let (store, _) = makeStore()
+
+        store.addPane()
+        XCTAssertEqual(store.visiblePanes, [.primary, .secondary])
+        XCTAssertEqual(store.splitLayout, .pair(.horizontal))
+
+        store.addPane()
+        XCTAssertEqual(store.visiblePanes, [.primary, .secondary, .tertiary])
+        XCTAssertEqual(store.splitLayout, .triple)
+
+        store.addPane()
+        XCTAssertEqual(store.splitLayout, .quad)
+        XCTAssertFalse(store.canAddPane)
+
+        // Every pane must show a different tab; one WKWebView cannot mount twice.
+        let paneTabs = store.visiblePanes.map { store.selectedTabID(for: $0) }
+        XCTAssertEqual(Set(paneTabs).count, 4)
+    }
+
+    func testCompactWidthStacksPanesAndCapsAtTwo() {
+        let (store, _) = makeStore()
+        store.layoutIsCompact = true
+
+        store.addPane()
+
+        XCTAssertEqual(store.splitLayout, .pair(.vertical))
+        XCTAssertFalse(store.canAddPane)
+        XCTAssertEqual(store.visiblePanes, [.primary, .secondary])
+    }
+
+    func testCompactWidthClipsGridBuiltOnIPad() {
+        let (store, _) = makeStore()
+        store.addPane()
+        store.addPane()
+        store.addPane()
+        XCTAssertEqual(store.splitLayout, .quad)
+
+        // Rotating into a compact width hides the extra panes without
+        // discarding them.
+        store.layoutIsCompact = true
+        XCTAssertEqual(store.visiblePanes, [.primary, .secondary])
+        XCTAssertEqual(store.splitLayout, .pair(.vertical))
+
+        store.layoutIsCompact = false
+        XCTAssertEqual(store.splitLayout, .quad)
+    }
+
+    func testClosingAPaneCompactsRemainingSlots() {
+        let (store, _) = makeStore()
+        store.addPane()
+        store.addPane()
+        let thirdID = store.selectedTabID(for: .tertiary)
+
+        store.closePane(.secondary)
+
+        XCTAssertEqual(store.visiblePanes, [.primary, .secondary])
+        XCTAssertEqual(store.selectedTabID(for: .secondary), thirdID)
+        XCTAssertNil(store.activeWorkspace.tertiaryTabID)
+    }
+
+    func testRowRatioIsClampedIndependentlyOfColumnRatio() {
+        let (store, _) = makeStore()
+
+        store.setSplitRowRatio(0.95)
+        XCTAssertEqual(store.activeWorkspace.splitRowRatio, 0.75)
+        XCTAssertEqual(store.activeWorkspace.splitRatio, 0.5)
+    }
+
     func testFinishTabDragPlacesDraggedTabInSplit() {
         let (store, _) = makeStore()
         let firstID = store.selectedTabID(for: .primary)

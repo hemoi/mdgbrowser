@@ -23,6 +23,10 @@ final class BrowserSession: NSObject, WKNavigationDelegate, WKUIDelegate {
     private(set) var hasOnlySecureContent = true
     private(set) var readerStyleEnabled = false
     private(set) var autoScrollEnabled = false
+    /// The page's own background, used to tint the command bar so it reads as
+    /// an extension of the site. nil while loading or on pages that don't
+    /// report one.
+    private(set) var pageBackgroundColor: UIColor?
 
     @ObservationIgnored private let contentBlocker: BrowserContentBlocker
     @ObservationIgnored private let downloadManager: BrowserDownloadManager
@@ -31,6 +35,7 @@ final class BrowserSession: NSObject, WKNavigationDelegate, WKUIDelegate {
     @ObservationIgnored private let closeHandler: () -> Void
     @ObservationIgnored private var blockerInstalled = false
     @ObservationIgnored private var autoScrollTask: Task<Void, Never>?
+    @ObservationIgnored private var pageColorObservations: [NSKeyValueObservation] = []
 
     init(
         workspaceID: UUID,
@@ -93,6 +98,24 @@ final class BrowserSession: NSObject, WKNavigationDelegate, WKUIDelegate {
         webView.uiDelegate = self
         webView.allowsBackForwardNavigationGestures = true
         applyVisualSettings(for: initialURL)
+        observePageColors()
+    }
+
+    /// `themeColor` and `underPageBackgroundColor` change without any
+    /// navigation callback (a site flipping its own dark mode, for example),
+    /// so track them by KVO rather than sampling at didFinish.
+    private func observePageColors() {
+        let apply: @MainActor @Sendable (WKWebView) -> Void = { [weak self] webView in
+            self?.pageBackgroundColor = webView.themeColor ?? webView.underPageBackgroundColor
+        }
+        pageColorObservations = [
+            webView.observe(\.themeColor, options: [.initial, .new]) { webView, _ in
+                MainActor.assumeIsolated { apply(webView) }
+            },
+            webView.observe(\.underPageBackgroundColor, options: [.initial, .new]) { webView, _ in
+                MainActor.assumeIsolated { apply(webView) }
+            },
+        ]
     }
 
     func loadIfNeeded(fallbackURLString: String) {
