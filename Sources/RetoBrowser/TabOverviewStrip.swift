@@ -347,46 +347,61 @@ struct TabDragGestureModifier: ViewModifier {
     let store: WorkspaceBrowserStore
     let tabID: UUID
     var minimumPressDuration: Double = 0.3
+    /// When true, the long-press-drag is attached alongside the view's own
+    /// gestures (`.simultaneousGesture`) instead of replacing them
+    /// (`.gesture`). Needed for hosts like the address field where a plain
+    /// tap must still reach the underlying control (e.g. to focus a
+    /// `TextField`) — a quick tap never satisfies the long-press threshold
+    /// so it isn't consumed either way, but `.gesture` can still delay the
+    /// control's own recognizer while UIKit waits to see if it becomes one.
+    var simultaneous: Bool = false
+
+    private var longPressDrag: some Gesture {
+        LongPressGesture(minimumDuration: minimumPressDuration)
+            .sequenced(before: DragGesture(minimumDistance: 0, coordinateSpace: .named(BrowserRootCoordinateSpace.name)))
+            .updating($isDraggingTab) { _, state, _ in
+                state = true
+            }
+            .onChanged { value in
+                switch value {
+                case .second(true, nil):
+                    if store.tabDragState == nil {
+                        store.beginTabDrag(tabID)
+                    }
+                case .second(true, .some(let drag)):
+                    if store.tabDragState == nil {
+                        store.beginTabDrag(tabID, at: drag.location)
+                    } else {
+                        store.updateTabDrag(location: drag.location)
+                    }
+                default:
+                    break
+                }
+            }
+            .onEnded { value in
+                switch value {
+                case .second(true, _):
+                    store.finishTabDrag()
+                default:
+                    store.cancelTabDrag()
+                }
+            }
+    }
 
     func body(content: Content) -> some View {
-        content
-            .gesture(
-                LongPressGesture(minimumDuration: minimumPressDuration)
-                    .sequenced(before: DragGesture(minimumDistance: 0, coordinateSpace: .named(BrowserRootCoordinateSpace.name)))
-                    .updating($isDraggingTab) { _, state, _ in
-                        state = true
-                    }
-                    .onChanged { value in
-                        switch value {
-                        case .second(true, nil):
-                            if store.tabDragState == nil {
-                                store.beginTabDrag(tabID)
-                            }
-                        case .second(true, .some(let drag)):
-                            if store.tabDragState == nil {
-                                store.beginTabDrag(tabID, at: drag.location)
-                            } else {
-                                store.updateTabDrag(location: drag.location)
-                            }
-                        default:
-                            break
-                        }
-                    }
-                    .onEnded { value in
-                        switch value {
-                        case .second(true, _):
-                            store.finishTabDrag()
-                        default:
-                            store.cancelTabDrag()
-                        }
-                    }
-            )
-            .onChange(of: isDraggingTab) {
-                // GestureState resets on cancellation paths that skip
-                // onEnded; a completed drag has already cleared the state,
-                // so this only tears down an abandoned one.
-                if !isDraggingTab { store.cancelTabDrag() }
+        Group {
+            if simultaneous {
+                content.simultaneousGesture(longPressDrag)
+            } else {
+                content.gesture(longPressDrag)
             }
+        }
+        .onChange(of: isDraggingTab) {
+            // GestureState resets on cancellation paths that skip
+            // onEnded; a completed drag has already cleared the state,
+            // so this only tears down an abandoned one.
+            if !isDraggingTab { store.cancelTabDrag() }
+        }
     }
 }
 
@@ -394,13 +409,15 @@ extension View {
     func tabDragGesture(
         store: WorkspaceBrowserStore,
         tabID: UUID,
-        minimumPressDuration: Double = 0.3
+        minimumPressDuration: Double = 0.3,
+        simultaneous: Bool = false
     ) -> some View {
         modifier(
             TabDragGestureModifier(
                 store: store,
                 tabID: tabID,
-                minimumPressDuration: minimumPressDuration
+                minimumPressDuration: minimumPressDuration,
+                simultaneous: simultaneous
             )
         )
     }

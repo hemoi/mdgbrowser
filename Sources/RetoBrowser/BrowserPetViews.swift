@@ -12,8 +12,16 @@ struct BrowserPetOverlay: View {
 
     @GestureState private var dragTranslation = CGSize.zero
     @State private var dragAnimation: PetAnimationState?
+    @State private var scrapStore = BrowserScrapStore()
+    @State private var pageLoadStartedAt: Date?
+
+    /// Below this, a finished load is unremarkable and the pet stays idle;
+    /// at or above it, a finished load gets a little jump.
+    private static let slowLoadThreshold: TimeInterval = 1.5
 
     private let basePetSize = CGSize(width: 92, height: 100)
+
+    private var activeSession: BrowserSession { browserStore.session(for: browserStore.activePane) }
 
     var body: some View {
         @Bindable var petStore = petStore
@@ -21,8 +29,9 @@ struct BrowserPetOverlay: View {
         GeometryReader { geometry in
             let center = renderedCenter(in: geometry.size, translation: dragTranslation)
             let petSize = renderedPetSize
-            let session = browserStore.session(for: browserStore.activePane)
-            let animation = dragAnimation ?? (session.isLoading ? .running : petStore.animationState)
+            let session = activeSession
+            let loadingAnimation = petStore.resolvedAnimation(.waiting)
+            let animation = dragAnimation ?? (session.isLoading ? loadingAnimation : petStore.animationState)
 
             ZStack {
                 if let message = petStore.activeMessage {
@@ -49,6 +58,7 @@ struct BrowserPetOverlay: View {
                         autoScrollEnabled: session.autoScrollEnabled,
                         perform: perform,
                         toggleAutoScroll: session.toggleAutoScroll,
+                        viewScraps: openScraps,
                         settings: openSettings
                     )
                     .position(actionDockCenter(for: center, petSize: petSize, canvasSize: geometry.size))
@@ -85,13 +95,41 @@ struct BrowserPetOverlay: View {
                 value: petStore.activeMessage
             )
         }
+        .onChange(of: activeSession.isLoading) { _, isLoadingNow in
+            if isLoadingNow {
+                pageLoadStartedAt = Date()
+                return
+            }
+            guard let startedAt = pageLoadStartedAt else { return }
+            pageLoadStartedAt = nil
+            let elapsed = Date().timeIntervalSince(startedAt)
+            if activeSession.errorMessage != nil {
+                petStore.notify(.pageLoadFailed)
+            } else {
+                petStore.notify(.pageLoadFinished(wasSlow: elapsed >= Self.slowLoadThreshold))
+            }
+        }
+        .onChange(of: browserStore.downloadManager.records) { oldRecords, newRecords in
+            let previouslyCompleted = Set(oldRecords.filter { $0.state == .completed }.map(\.id))
+            let justCompleted = newRecords.contains { $0.state == .completed && !previouslyCompleted.contains($0.id) }
+            if justCompleted {
+                petStore.notify(.downloadCompleted)
+            }
+        }
         .sheet(item: $petStore.presentedSheet) { destination in
             switch destination {
             case .settings:
-                PetSettingsSheet(store: petStore, session: browserStore.session(for: browserStore.activePane))
+                PetSettingsSheet(store: petStore, session: activeSession, openInBrowser: openInBrowser)
                     .environment(theme)
                     .presentationDetents([.large])
                     .presentationDragIndicator(.visible)
+            case .scraps:
+                ScrapListSheet(store: scrapStore) { url in
+                    browserStore.addTab(opening: url)
+                }
+                .environment(theme)
+                .presentationDetents([.large])
+                .presentationDragIndicator(.visible)
             }
         }
         .allowsHitTesting(true)
@@ -210,6 +248,10 @@ struct BrowserPetOverlay: View {
             } else {
                 browserStore.toastMessage = "Clipboard has no address"
             }
+        case .saveScrap:
+            Task {
+                await saveCurrentPageAsScrap(session: session, scrapStore: scrapStore, petStore: petStore)
+            }
         case .sendKey(let keystroke):
             if !terminalStore.sendKeystroke(keystroke) {
                 browserStore.toastMessage = "Connect an SSH terminal first"
@@ -231,6 +273,18 @@ struct BrowserPetOverlay: View {
     private func openSettings() {
         petStore.dismissQuickActions()
         petStore.presentedSheet = .settings
+    }
+
+    private func openScraps() {
+        petStore.dismissQuickActions()
+        petStore.presentedSheet = .scraps
+    }
+
+    /// Opens a recommended pet-acquisition site in a new tab and closes
+    /// every pet sheet so the new tab is immediately visible.
+    private func openInBrowser(_ url: URL) {
+        browserStore.addTab(opening: url)
+        petStore.presentedSheet = nil
     }
 }
 
@@ -271,6 +325,7 @@ private struct PetQuickActionDock: View {
     let autoScrollEnabled: Bool
     let perform: (PetQuickAction) -> Void
     let toggleAutoScroll: () -> Void
+    let viewScraps: () -> Void
     let settings: () -> Void
 
     var body: some View {
@@ -291,6 +346,13 @@ private struct PetQuickActionDock: View {
                 identifier: "pet.action.auto-scroll",
                 isActive: autoScrollEnabled,
                 action: toggleAutoScroll
+            )
+
+            actionButton(
+                systemName: "bookmark",
+                label: "View scraps",
+                identifier: "pet.action.scraps",
+                action: viewScraps
             )
 
             actionButton(
@@ -336,6 +398,9 @@ private struct PetSettingsSheet: View {
 
     let store: BrowserPetStore
     let session: BrowserSession
+    /// Opens a URL in a new browser tab — used by the "Get more pets"
+    /// recommended sources and closes every pet sheet on the way there.
+    let openInBrowser: (URL) -> Void
 
     var body: some View {
         @Bindable var store = store
@@ -343,9 +408,11 @@ private struct PetSettingsSheet: View {
         NavigationStack {
             Form {
                 Section("Pet") {
-                    petRow(name: "Banana (bundled)", petID: nil)
+                    ForEach(store.bundledPets) { pet in
+                        petRow(name: "\(pet.displayName) (bundled)", petID: pet.id, atlas: store.previewAtlas(forBundledID: pet.id))
+                    }
                     ForEach(store.installedPets) { pet in
-                        petRow(name: pet.displayName, petID: pet.id)
+                        petRow(name: pet.displayName, petID: pet.id, atlas: store.previewAtlas(forInstalled: pet))
                             .swipeActions(edge: .trailing) {
                                 Button("Delete", systemImage: "trash", role: .destructive) {
                                     store.deletePet(pet.id)
@@ -353,10 +420,16 @@ private struct PetSettingsSheet: View {
                             }
                     }
 
-                    Button("Get pets from codex-pets.net", systemImage: "sparkle.magnifyingglass") {
+                    Button("Get more pets", systemImage: "sparkle.magnifyingglass") {
                         galleryPresented = true
                     }
                     .accessibilityIdentifier("pet.settings.gallery")
+                }
+
+                Section("Scraps") {
+                    Button("View Scraps", systemImage: "bookmark") {
+                        store.presentedSheet = .scraps
+                    }
                 }
 
                 Section {
@@ -420,26 +493,39 @@ private struct PetSettingsSheet: View {
             }
         }
         .sheet(isPresented: $galleryPresented) {
-            CodexPetGallerySheet(petStore: store)
+            CodexPetGallerySheet(petStore: store, openInBrowser: openInBrowser)
                 .environment(theme)
                 .presentationDetents([.large])
         }
     }
 
-    private func petRow(name: String, petID: String?) -> some View {
+    private func petRow(name: String, petID: String?, atlas: ActivePetAtlas?) -> some View {
         Button {
             store.applyPet(petID)
         } label: {
-            HStack {
+            HStack(spacing: 10) {
+                thumbnail(for: atlas)
                 Text(name)
                     .foregroundStyle(.primary)
                 Spacer()
-                if store.selectedPetID == petID {
+                if store.effectiveSelectedPetID == petID {
                     Image(systemName: "checkmark")
                         .font(.system(size: 12, weight: .semibold))
                 }
             }
         }
+    }
+
+    private func thumbnail(for atlas: ActivePetAtlas?) -> some View {
+        Group {
+            if let atlas {
+                PetAtlasFrameView(atlas: atlas, row: PetAnimationState.idle.row, column: 0)
+            } else {
+                Image(systemName: "pawprint")
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .frame(width: 32, height: 32)
     }
 
     private func slotBinding(_ index: Int) -> Binding<PetQuickAction?> {

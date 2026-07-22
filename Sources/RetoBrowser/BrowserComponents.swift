@@ -1,10 +1,8 @@
 import SwiftUI
 
 enum BrowserFeatureFlags {
-    /// The pet overlay is parked while the browser chrome is being reworked.
-    /// Its stores, sprites, and tmux event plumbing stay in the build so it
-    /// can be switched back on without reconstruction.
-    static let petEnabled = false
+    /// The pet is a headline feature. Pro gating (IAP) comes later — not now.
+    static let petEnabled = true
 }
 
 struct CompactIconButton: View {

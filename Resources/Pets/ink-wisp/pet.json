@@ -1,0 +1,7 @@
+{
+  "id": "ink-wisp",
+  "displayName": "Ink Wisp",
+  "description": "A quiet ink wisp that reads, thinks, reacts, and absorbs scraps.",
+  "spritesheetPath": "spritesheet.webp",
+  "eventAnimations": ["jumping", "failed", "waiting", "review"]
+}

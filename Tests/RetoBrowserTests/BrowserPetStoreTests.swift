@@ -1,3 +1,4 @@
+import UIKit
 import XCTest
 @testable import RetoBrowser
 
@@ -29,7 +30,106 @@ final class BrowserPetStoreTests: XCTestCase {
         XCTAssertEqual(PetAnimationState.runningRight.row, 1)
         XCTAssertEqual(PetAnimationState.runningLeft.row, 2)
         XCTAssertEqual(PetAnimationState.waving.row, 3)
+        XCTAssertEqual(PetAnimationState.jumping.row, 4)
+        XCTAssertEqual(PetAnimationState.failed.row, 5)
+        XCTAssertEqual(PetAnimationState.waiting.row, 6)
         XCTAssertEqual(PetAnimationState.running.row, 7)
+        XCTAssertEqual(PetAnimationState.review.row, 8)
+    }
+
+    // MARK: - Event animation availability (C3.2)
+
+    func testResolvedAnimationFallsBackToIdleWhenInstalledPetLacksTheRow() throws {
+        let (store, defaults, suiteName) = makeStore()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        // A 4-row atlas (idle/runningRight/runningLeft/waving, rows 0-3) has
+        // no physical row for jumping (4), failed (5), waiting (6), or
+        // review (8) — same shape as the bundled Banana sample. Rows are
+        // gated by `row < rows` (see testResolvedAnimationRespectsPartialRowCounts),
+        // so 5 rows would already reach jumping's row (4) — it takes 4 rows
+        // to exclude every event state.
+        let pet = InstalledCodexPet(id: "four-row", displayName: "Four Row", columns: 8, rows: 4)
+        try store.installPet(pet, spritesheetData: validSpritesheetData(columns: pet.columns, rows: pet.rows))
+        store.applyPet(pet.id)
+
+        XCTAssertEqual(store.resolvedAnimation(.jumping), .idle)
+        XCTAssertEqual(store.resolvedAnimation(.failed), .idle)
+        XCTAssertEqual(store.resolvedAnimation(.waiting), .idle)
+        XCTAssertEqual(store.resolvedAnimation(.review), .idle)
+        // The base states are never affected by row-count gating.
+        XCTAssertEqual(store.resolvedAnimation(.idle), .idle)
+        XCTAssertEqual(store.resolvedAnimation(.waving), .waving)
+    }
+
+    func testResolvedAnimationPassesThroughWhenInstalledPetHasEnoughRows() throws {
+        let (store, defaults, suiteName) = makeStore()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let pet = InstalledCodexPet(id: "nine-row", displayName: "Nine Row", columns: 8, rows: 9)
+        try store.installPet(pet, spritesheetData: validSpritesheetData(columns: pet.columns, rows: pet.rows))
+        store.applyPet(pet.id)
+
+        XCTAssertEqual(store.resolvedAnimation(.jumping), .jumping)
+        XCTAssertEqual(store.resolvedAnimation(.failed), .failed)
+        XCTAssertEqual(store.resolvedAnimation(.waiting), .waiting)
+        XCTAssertEqual(store.resolvedAnimation(.review), .review)
+    }
+
+    func testResolvedAnimationRespectsPartialRowCounts() throws {
+        let (store, defaults, suiteName) = makeStore()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        // 6 rows reaches jumping (row 4) and failed (row 5) but not
+        // waiting (row 6) or review (row 8).
+        let pet = InstalledCodexPet(id: "six-row", displayName: "Six Row", columns: 8, rows: 6)
+        try store.installPet(pet, spritesheetData: validSpritesheetData(columns: pet.columns, rows: pet.rows))
+        store.applyPet(pet.id)
+
+        XCTAssertEqual(store.resolvedAnimation(.jumping), .jumping)
+        XCTAssertEqual(store.resolvedAnimation(.failed), .failed)
+        XCTAssertEqual(store.resolvedAnimation(.waiting), .idle)
+        XCTAssertEqual(store.resolvedAnimation(.review), .idle)
+    }
+
+    func testNotifyPlaysTheMatchingTransientAnimationWhenSupported() throws {
+        let (store, defaults, suiteName) = makeStore()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let pet = InstalledCodexPet(id: "nine-row-2", displayName: "Nine Row", columns: 8, rows: 9)
+        try store.installPet(pet, spritesheetData: validSpritesheetData(columns: pet.columns, rows: pet.rows))
+        store.applyPet(pet.id)
+
+        store.notify(.pageLoadFailed)
+        XCTAssertEqual(store.animationState, .failed)
+
+        store.notify(.scrapSaved)
+        XCTAssertEqual(store.animationState, .review)
+
+        store.notify(.downloadCompleted)
+        XCTAssertEqual(store.animationState, .jumping)
+    }
+
+    func testNotifyIgnoresFastPageLoadsAndUnsupportedRows() throws {
+        let (store, defaults, suiteName) = makeStore()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let pet = InstalledCodexPet(id: "four-row-2", displayName: "Four Row", columns: 8, rows: 4)
+        try store.installPet(pet, spritesheetData: validSpritesheetData(columns: pet.columns, rows: pet.rows))
+        // Select the pet directly rather than via `applyPet`, which also
+        // plays a wave transient that only resets to `.idle` asynchronously
+        // (after a 760ms Task.sleep) — asserting `.idle` right after would
+        // otherwise observe that leftover wave instead of exercising the
+        // `notify` behavior this test is actually about.
+        store.selectedPetID = pet.id
+
+        store.notify(.pageLoadFinished(wasSlow: false))
+        XCTAssertEqual(store.animationState, .idle)
+
+        // A slow-load celebration would be `.jumping`, but this pet's atlas
+        // doesn't have that row — must stay idle, not go out of range.
+        store.notify(.pageLoadFinished(wasSlow: true))
+        XCTAssertEqual(store.animationState, .idle)
     }
 
     func testQuickActionsPersistAndDeduplicate() {
@@ -209,5 +309,20 @@ final class BrowserPetStoreTests: XCTestCase {
         FileManager.default.temporaryDirectory
             .appendingPathComponent("BrowserPetStoreTests", isDirectory: true)
             .appendingPathComponent(name.hashValue.description, isDirectory: true)
+    }
+
+    /// A tiny but genuinely decodable image, sized to the declared grid —
+    /// needed wherever a test exercises `activeAtlas`/`resolvedAnimation`,
+    /// since those only treat an installed pet as active once its
+    /// spritesheet actually decodes. Rendering a real PNG at runtime (rather
+    /// than a hand-rolled byte blob) is what makes it reliably decodable.
+    private func validSpritesheetData(columns: Int, rows: Int, cellSize: Int = 4) -> Data {
+        let size = CGSize(width: columns * cellSize, height: rows * cellSize)
+        let renderer = UIGraphicsImageRenderer(size: size)
+        let image = renderer.image { context in
+            UIColor.systemPink.setFill()
+            context.fill(CGRect(origin: .zero, size: size))
+        }
+        return image.pngData()!
     }
 }

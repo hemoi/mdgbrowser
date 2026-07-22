@@ -8,7 +8,18 @@ enum PetAnimationState: String, CaseIterable {
     case runningRight
     case runningLeft
     case waving
+    /// Row 4 — a short celebratory hop. Played once after a slow page load
+    /// finally finishes, or when a download completes.
+    case jumping
+    /// Row 5 — a discouraged reaction. Played once when a page fails to load.
+    case failed
+    /// Row 6 — an expectant loop. Shown continuously while the active page
+    /// is loading.
+    case waiting
     case running
+    /// Row 8 — absorbing a scrap. Played once when the user saves a
+    /// selection or page link to their scrap list.
+    case review
 
     var row: Int {
         switch self {
@@ -20,8 +31,16 @@ enum PetAnimationState: String, CaseIterable {
             2
         case .waving:
             3
+        case .jumping:
+            4
+        case .failed:
+            5
+        case .waiting:
+            6
         case .running:
             7
+        case .review:
+            8
         }
     }
 
@@ -33,6 +52,12 @@ enum PetAnimationState: String, CaseIterable {
             8
         case .waving:
             4
+        case .jumping:
+            5
+        case .failed:
+            8
+        case .waiting, .review:
+            6
         }
     }
 
@@ -46,8 +71,36 @@ enum PetAnimationState: String, CaseIterable {
             0.18
         case .running:
             0.16
+        case .jumping, .failed:
+            0.14
+        case .waiting, .review:
+            0.15
         }
     }
+
+    /// States every bundled/downloaded atlas is assumed to have real art
+    /// for — the classic 5-row layout every pet ships with at minimum.
+    static let baseStates: Set<PetAnimationState> = [.idle, .runningRight, .runningLeft, .waving, .running]
+
+    /// The four rows a pet only has if it opts in (bundled pets via
+    /// `pet.json`'s `eventAnimations`, downloaded pets by having enough
+    /// rows in their grid). Order matches row index.
+    static let eventStates: [PetAnimationState] = [.jumping, .failed, .waiting, .review]
+}
+
+/// A browser happening the pet reacts to. See `BrowserPetStore.notify(_:)`.
+enum PetBrowserEvent {
+    /// A page finished loading. `wasSlow` is true when it took long enough
+    /// that a little celebration is worth showing (see the pet overlay's
+    /// slow-load threshold) — fast loads are common and shouldn't be noisy.
+    case pageLoadFinished(wasSlow: Bool)
+    /// Navigation failed (not a bad address typed by the user — that never
+    /// starts a load in the first place).
+    case pageLoadFailed
+    /// A download finished successfully.
+    case downloadCompleted
+    /// The user saved a scrap (selection or page link).
+    case scrapSaved
 }
 
 /// Special keys the pet can feed into the focused SSH terminal — the keys an
@@ -125,16 +178,17 @@ enum PetQuickAction: Hashable, Identifiable, Sendable {
     case commandPalette
     case copyPageURL
     case pasteAndGo
+    case saveScrap
     case sendKey(TerminalKeystroke)
 
-    static let defaults: [PetQuickAction] = [.reload, .newTab, .openAI]
+    static let defaults: [PetQuickAction] = [.reload, .newTab, .openAI, .saveScrap]
     static let maxSlots = 4
 
     static var allOptions: [PetQuickAction] {
         [
             .reload, .newTab, .goBack, .goForward, .openAI,
             .toggleTerminal, .toggleSplit, .commandPalette,
-            .copyPageURL, .pasteAndGo
+            .copyPageURL, .pasteAndGo, .saveScrap
         ] + TerminalKeystroke.allCases.map(PetQuickAction.sendKey)
     }
 
@@ -152,6 +206,7 @@ enum PetQuickAction: Hashable, Identifiable, Sendable {
         case .commandPalette: "Command palette"
         case .copyPageURL: "Copy page link"
         case .pasteAndGo: "Paste and go"
+        case .saveScrap: "Save scrap"
         case .sendKey(let keystroke): "Key · \(keystroke.label)"
         }
     }
@@ -168,6 +223,7 @@ enum PetQuickAction: Hashable, Identifiable, Sendable {
         case .commandPalette: "command"
         case .copyPageURL: "link"
         case .pasteAndGo: "doc.on.clipboard"
+        case .saveScrap: "bookmark"
         case .sendKey(let keystroke): keystroke.systemImage
         }
     }
@@ -191,6 +247,7 @@ extension PetQuickAction: RawRepresentable, Codable {
         case "commandPalette": self = .commandPalette
         case "copyPageURL": self = .copyPageURL
         case "pasteAndGo": self = .pasteAndGo
+        case "saveScrap": self = .saveScrap
         default: return nil
         }
     }
@@ -207,6 +264,7 @@ extension PetQuickAction: RawRepresentable, Codable {
         case .commandPalette: "commandPalette"
         case .copyPageURL: "copyPageURL"
         case .pasteAndGo: "pasteAndGo"
+        case .saveScrap: "saveScrap"
         case .sendKey(let keystroke): "key:\(keystroke.rawValue)"
         }
     }
@@ -253,6 +311,47 @@ struct ActivePetAtlas {
     let columns: Int
     let rows: Int
     let image: CGImage?
+    /// States this specific atlas has real art for. Always a superset of
+    /// `PetAnimationState.baseStates` — the event rows (jumping, failed,
+    /// waiting, review) are opt-in per pet. Requesting an unsupported state
+    /// falls back to idle rather than showing a blank or out-of-range frame.
+    var availableStates: Set<PetAnimationState> = PetAnimationState.baseStates
+}
+
+/// Metadata read from a bundled pet's `pet.json` — the same on-disk shape
+/// pet-for-safari uses, so pets can be dropped into `Resources/Pets/<id>/`
+/// without any code changes beyond the shared atlas contract below.
+///
+/// `eventAnimations` is an optional extension to that shared shape: the
+/// rawValues of whichever `PetAnimationState.eventStates` this pet's atlas
+/// has real frames for (e.g. `["jumping", "failed", "waiting", "review"]`).
+/// Every bundled atlas is physically sized to 9 rows for layout consistency,
+/// but a pet that never authored art for rows 4-8 (like the sample Banana)
+/// must not claim those rows — hence this is explicit metadata, not just a
+/// row-count check.
+private struct BundledPetMetadata: Codable {
+    let id: String
+    let displayName: String
+    let description: String?
+    let spritesheetPath: String
+    let eventAnimations: [String]?
+}
+
+/// A pet shipped inside the app bundle (as opposed to one the user downloaded
+/// at runtime into `installedPets`). Every bundled pet is expected to follow
+/// the shared "codex-pets" 8-column x 9-row atlas contract, matching
+/// `PetAnimationState.row`.
+struct BundledPet: Identifiable, Equatable, Sendable {
+    static let atlasColumns = 8
+    static let atlasRows = 9
+
+    let id: String
+    let displayName: String
+    let description: String
+    let columns: Int
+    let rows: Int
+    let eventAnimationStates: Set<PetAnimationState>
+    fileprivate let spritesheetURL: URL
 }
 
 extension ActivePetAtlas: Equatable {
@@ -263,6 +362,7 @@ extension ActivePetAtlas: Equatable {
 
 enum BrowserPetSheetDestination: String, Identifiable {
     case settings
+    case scraps
 
     var id: String { rawValue }
 }
@@ -337,19 +437,57 @@ final class BrowserPetStore {
     @ObservationIgnored private let petsDirectory: URL
     @ObservationIgnored private var animationResetTask: Task<Void, Never>?
     @ObservationIgnored private var atlasImageCache: [String: CGImage] = [:]
+    @ObservationIgnored private var bundledAtlasImageCache: [String: CGImage] = [:]
     @ObservationIgnored private var messageQueue: [PetMessage] = []
     @ObservationIgnored private var messageDismissTask: Task<Void, Never>?
 
-    @ObservationIgnored private static let bundledAtlasImage: CGImage? = {
-        guard let url = Bundle.main.url(
-            forResource: "spritesheet",
-            withExtension: "webp",
-            subdirectory: "Pets/banana"
-        ) else {
-            return nil
+    /// Every pet bundled under `Resources/Pets/<id>/`, discovered at launch
+    /// by scanning that folder reference for `pet.json` metadata files —
+    /// nothing here is a hardcoded per-pet name, so dropping in a new pet
+    /// directory is enough to make it available.
+    @ObservationIgnored private static let bundledPetCatalog: [BundledPet] = {
+        guard let petsDirectoryURL = Bundle.main.url(forResource: "Pets", withExtension: nil) else {
+            return []
         }
-        return UIImage(contentsOfFile: url.path)?.cgImage
+        let fileManager = FileManager.default
+        guard let entries = try? fileManager.contentsOfDirectory(
+            at: petsDirectoryURL,
+            includingPropertiesForKeys: [.isDirectoryKey]
+        ) else {
+            return []
+        }
+        return entries.compactMap { directoryURL -> BundledPet? in
+            var isDirectory: ObjCBool = false
+            guard fileManager.fileExists(atPath: directoryURL.path, isDirectory: &isDirectory),
+                  isDirectory.boolValue else {
+                return nil
+            }
+            let metadataURL = directoryURL.appendingPathComponent("pet.json")
+            guard let data = try? Data(contentsOf: metadataURL),
+                  let metadata = try? JSONDecoder().decode(BundledPetMetadata.self, from: data) else {
+                return nil
+            }
+            let eventStates = Set(
+                (metadata.eventAnimations ?? []).compactMap(PetAnimationState.init(rawValue:))
+                    .filter { PetAnimationState.eventStates.contains($0) }
+            )
+            return BundledPet(
+                id: metadata.id,
+                displayName: metadata.displayName,
+                description: metadata.description ?? "",
+                columns: BundledPet.atlasColumns,
+                rows: BundledPet.atlasRows,
+                eventAnimationStates: eventStates,
+                spritesheetURL: directoryURL.appendingPathComponent(metadata.spritesheetPath)
+            )
+        }
+        .sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
     }()
+
+    /// The default bundled pet used when nothing is selected — kept as
+    /// "banana" for compatibility with existing `selectedPetID == nil`
+    /// snapshots.
+    @ObservationIgnored private static let defaultBundledPetID = "banana"
 
     static var defaultPetsDirectory: URL {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -384,21 +522,129 @@ final class BrowserPetStore {
         if ProcessInfo.processInfo.arguments.contains("-show-sample-pet-actions") {
             quickActionsVisible = true
         }
+        // Verification-only hook so a bundled pet other than the default can
+        // be selected without a UI affordance — never used in release
+        // builds. Example: `-select-bundled-pet ink-wisp`.
+        if let flagIndex = ProcessInfo.processInfo.arguments.firstIndex(of: "-select-bundled-pet"),
+           ProcessInfo.processInfo.arguments.indices.contains(flagIndex + 1) {
+            selectedPetID = ProcessInfo.processInfo.arguments[flagIndex + 1]
+        }
         #endif
     }
 
+    /// Pets bundled inside the app (as opposed to downloaded ones), sorted
+    /// for display. Currently ships `banana` and `ink-wisp`.
+    var bundledPets: [BundledPet] { Self.bundledPetCatalog }
+
+    /// `selectedPetID` resolved against the same default the atlas lookup
+    /// uses, for UI that needs to mark "the active pet" even when nothing
+    /// has been explicitly chosen yet.
+    var effectiveSelectedPetID: String? {
+        selectedPetID ?? Self.defaultBundledPetID
+    }
+
     var activeAtlas: ActivePetAtlas {
-        if let selectedPetID,
-           let pet = installedPets.first(where: { $0.id == selectedPetID }),
-           let image = atlasImage(for: pet) {
-            return ActivePetAtlas(key: pet.id, columns: pet.columns, rows: pet.rows, image: image)
+        if let selectedPetID {
+            if let pet = installedPets.first(where: { $0.id == selectedPetID }) {
+                if let image = atlasImage(for: pet) {
+                    return ActivePetAtlas(
+                        key: pet.id,
+                        columns: pet.columns,
+                        rows: pet.rows,
+                        image: image,
+                        availableStates: Self.availableStates(forRows: pet.rows)
+                    )
+                }
+                // The selected pet is installed but its spritesheet failed
+                // to decode (corrupt download, unsupported format, etc).
+                // Previously this fell through to the default *bundled*
+                // pet's atlas — silently swapping in a different pet's art
+                // under the user's selection, and (were the default ever
+                // changed to a pet with event-row art) potentially claiming
+                // jumping/failed/waiting/review support the actually
+                // rendered atlas never had. Surface "no art" for this pet
+                // instead of masquerading as an unrelated pet.
+                return ActivePetAtlas(
+                    key: pet.id,
+                    columns: pet.columns,
+                    rows: pet.rows,
+                    image: nil,
+                    availableStates: PetAnimationState.baseStates
+                )
+            }
+            if let bundled = Self.bundledPetCatalog.first(where: { $0.id == selectedPetID }),
+               let image = bundledAtlasImage(for: bundled) {
+                return ActivePetAtlas(
+                    key: "bundled.\(bundled.id)",
+                    columns: bundled.columns,
+                    rows: bundled.rows,
+                    image: image,
+                    availableStates: PetAnimationState.baseStates.union(bundled.eventAnimationStates)
+                )
+            }
+        }
+        if let defaultPet = Self.bundledPetCatalog.first(where: { $0.id == Self.defaultBundledPetID })
+            ?? Self.bundledPetCatalog.first,
+           let image = bundledAtlasImage(for: defaultPet) {
+            return ActivePetAtlas(
+                key: ActivePetAtlas.bundledKey,
+                columns: defaultPet.columns,
+                rows: defaultPet.rows,
+                image: image,
+                availableStates: PetAnimationState.baseStates.union(defaultPet.eventAnimationStates)
+            )
+        }
+        return ActivePetAtlas(key: ActivePetAtlas.bundledKey, columns: 8, rows: 9, image: nil)
+    }
+
+    /// Downloaded pets carry no explicit per-row art manifest — only a grid
+    /// size — so availability is inferred from whether the row physically
+    /// exists in the declared grid. `PetAnimationState.row` gives the 0-based
+    /// row index each event state needs.
+    private static func availableStates(forRows rows: Int) -> Set<PetAnimationState> {
+        PetAnimationState.baseStates.union(PetAnimationState.eventStates.filter { $0.row < rows })
+    }
+
+    /// True when the active pet's atlas has real art for `state` — event
+    /// states (jumping/failed/waiting/review) are opt-in per pet.
+    func supports(_ state: PetAnimationState) -> Bool {
+        activeAtlas.availableStates.contains(state)
+    }
+
+    /// The atlas for a bundled pet by id, regardless of what's currently
+    /// selected — used to render preview thumbnails in the pet picker.
+    func previewAtlas(forBundledID id: String) -> ActivePetAtlas? {
+        guard let bundled = Self.bundledPetCatalog.first(where: { $0.id == id }),
+              let image = bundledAtlasImage(for: bundled) else {
+            return nil
         }
         return ActivePetAtlas(
-            key: ActivePetAtlas.bundledKey,
-            columns: 8,
-            rows: 9,
-            image: Self.bundledAtlasImage
+            key: "bundled.\(bundled.id)",
+            columns: bundled.columns,
+            rows: bundled.rows,
+            image: image,
+            availableStates: PetAnimationState.baseStates.union(bundled.eventAnimationStates)
         )
+    }
+
+    /// The atlas for a downloaded/installed pet, regardless of selection —
+    /// same purpose as `previewAtlas(forBundledID:)`.
+    func previewAtlas(forInstalled pet: InstalledCodexPet) -> ActivePetAtlas? {
+        guard let image = atlasImage(for: pet) else { return nil }
+        return ActivePetAtlas(
+            key: pet.id,
+            columns: pet.columns,
+            rows: pet.rows,
+            image: image,
+            availableStates: Self.availableStates(forRows: pet.rows)
+        )
+    }
+
+    /// `state` if the active pet's atlas has art for it, otherwise `.idle`.
+    /// Every animation the pet plays should be routed through this so a pet
+    /// missing a row never shows a blank frame.
+    func resolvedAnimation(_ state: PetAnimationState) -> PetAnimationState {
+        supports(state) ? state : .idle
     }
 
     func toggleQuickActions() {
@@ -444,12 +690,39 @@ final class BrowserPetStore {
     }
 
     func playWave() {
+        playTransient(.waving, for: .milliseconds(760))
+    }
+
+    /// Plays `state` once, then returns to idle. No-ops silently (stays on
+    /// whatever is currently playing) when the active pet's atlas has no art
+    /// for that state — see `resolvedAnimation`.
+    private func playTransient(_ state: PetAnimationState, for duration: Duration) {
+        guard supports(state) else { return }
         animationResetTask?.cancel()
-        animationState = .waving
+        animationState = state
         animationResetTask = Task { @MainActor [weak self] in
-            try? await Task.sleep(for: .milliseconds(760))
+            try? await Task.sleep(for: duration)
             guard !Task.isCancelled else { return }
             self?.animationState = .idle
+        }
+    }
+
+    // MARK: - Browser event reactions
+
+    /// A browser-level happening the pet can react to. Fired from the pet
+    /// overlay's existing observation of session/download state, plus
+    /// direct call sites like the scrap-saving action.
+    func notify(_ event: PetBrowserEvent) {
+        switch event {
+        case .pageLoadFinished(let wasSlow):
+            guard wasSlow else { return }
+            playTransient(.jumping, for: .milliseconds(900))
+        case .pageLoadFailed:
+            playTransient(.failed, for: .milliseconds(1120))
+        case .downloadCompleted:
+            playTransient(.jumping, for: .milliseconds(900))
+        case .scrapSaved:
+            playTransient(.review, for: .milliseconds(900))
         }
     }
 
@@ -529,7 +802,9 @@ final class BrowserPetStore {
         }
         .sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
 
-        if let selectedPetID, !installedPets.contains(where: { $0.id == selectedPetID }) {
+        if let selectedPetID,
+           !installedPets.contains(where: { $0.id == selectedPetID }),
+           !Self.bundledPetCatalog.contains(where: { $0.id == selectedPetID }) {
             self.selectedPetID = nil
         }
     }
@@ -572,6 +847,13 @@ final class BrowserPetStore {
             .appendingPathComponent(InstalledCodexPet.spritesheetFileName)
         guard let image = UIImage(contentsOfFile: url.path)?.cgImage else { return nil }
         atlasImageCache[pet.id] = image
+        return image
+    }
+
+    private func bundledAtlasImage(for pet: BundledPet) -> CGImage? {
+        if let cached = bundledAtlasImageCache[pet.id] { return cached }
+        guard let image = UIImage(contentsOfFile: pet.spritesheetURL.path)?.cgImage else { return nil }
+        bundledAtlasImageCache[pet.id] = image
         return image
     }
 

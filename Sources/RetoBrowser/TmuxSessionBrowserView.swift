@@ -37,8 +37,7 @@ struct TmuxSessionBrowserSheet: View {
                         Button("Add Profile") {
                             store.presentedSheet = .profileEditor(SSHProfile())
                         }
-                        .buttonStyle(.borderedProminent)
-                        .tint(theme.accent)
+                        .primaryActionStyle(theme)
                     }
                 }
             }

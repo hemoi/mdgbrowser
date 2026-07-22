@@ -161,7 +161,16 @@ struct TerminalPanel: View {
             Rectangle().fill(theme.border).frame(height: 0.5)
             terminalContent
         }
-        .background(theme.background)
+        .background {
+            // On the iPhone sheet presentation the panel's own background
+            // otherwise stops above the home-indicator safe area, leaving a
+            // seam where the sheet's presentation background shows through.
+            // Extend the fill through the bottom safe area so the panel
+            // reads as one continuous surface; the VStack above is left
+            // alone so its content (tab bar, terminal, empty state) still
+            // lays out above the home indicator.
+            theme.background.ignoresSafeArea(edges: isPhoneSheet ? .bottom : [])
+        }
         .sheet(item: $store.presentedSheet) { destination in
             switch destination {
             case .profiles:
@@ -462,8 +471,7 @@ private struct TerminalEmptyState: View {
                 Button("Add SSH Profile", systemImage: "plus") {
                     store.presentedSheet = .profiles
                 }
-                .buttonStyle(.borderedProminent)
-                .tint(theme.accent)
+                .primaryActionStyle(theme)
                 .accessibilityIdentifier("terminal.empty.add-profile")
             } else {
                 Menu("Open SSH Profile", systemImage: "server.rack") {
@@ -471,8 +479,7 @@ private struct TerminalEmptyState: View {
                         Button(profile.displayName) { store.openTab(profileID: profile.id) }
                     }
                 }
-                .buttonStyle(.borderedProminent)
-                .tint(theme.accent)
+                .primaryActionStyle(theme)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -512,8 +519,7 @@ struct SSHProfilesSheet: View {
                         Text("Connection details and passwords are stored only in this device’s Keychain.")
                     } actions: {
                         Button("Add Profile") { editingProfile = SSHProfile() }
-                            .buttonStyle(.borderedProminent)
-                            .tint(theme.accent)
+                            .primaryActionStyle(theme)
                             .accessibilityIdentifier("terminal.profiles.add-empty")
                     }
                 } else {
@@ -590,6 +596,22 @@ struct SSHProfilesSheet: View {
     }
 }
 
+/// Resolves the SSH profile editor's port text field to a concrete port
+/// number. Kept free of view state so it can be unit tested directly.
+enum SSHPortField {
+    /// Default port used whenever the field is left blank or holds text that
+    /// doesn't parse to a valid port.
+    static let defaultPort = 22
+
+    static func resolvedPort(from text: String) -> Int {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let parsed = Int(trimmed), (1...65_535).contains(parsed) else {
+            return defaultPort
+        }
+        return parsed
+    }
+}
+
 struct SSHProfileEditor: View {
     private enum FocusField: Hashable {
         case name
@@ -604,6 +626,7 @@ struct SSHProfileEditor: View {
     @Environment(BrowserTheme.self) private var theme
     @Environment(\.dismiss) private var dismiss
     @State private var profile: SSHProfile
+    @State private var portText: String
     @State private var importingPrivateKey = false
     @State private var keyImportError: String?
     @FocusState private var focusedField: FocusField?
@@ -612,6 +635,11 @@ struct SSHProfileEditor: View {
 
     init(profile: SSHProfile, store: TerminalWorkspaceStore) {
         _profile = State(initialValue: profile)
+        // A non-optional Int always has a value, so a freshly created profile
+        // (whose port already defaults to 22) would otherwise show "22" as
+        // if the user had typed it. Show it blank instead and let the
+        // placeholder communicate the default.
+        _portText = State(initialValue: profile.port == SSHPortField.defaultPort ? "" : String(profile.port))
         self.store = store
     }
 
@@ -632,9 +660,12 @@ struct SSHProfileEditor: View {
                         .submitLabel(.next)
                         .onSubmit { focusedField = .port }
 
-                    TextField("Port", value: $profile.port, format: .number)
+                    TextField("Port", text: $portText, prompt: Text("Port 22 if left empty"))
                         .keyboardType(.numberPad)
                         .focused($focusedField, equals: .port)
+                        .onChange(of: portText) {
+                            profile.port = SSHPortField.resolvedPort(from: portText)
+                        }
                 }
 
                 Section {
@@ -736,6 +767,7 @@ struct SSHProfileEditor: View {
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Save") {
+                        profile.port = SSHPortField.resolvedPort(from: portText)
                         if store.saveProfile(profile) {
                             dismiss()
                         }

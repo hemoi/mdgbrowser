@@ -26,6 +26,13 @@ struct WorkspaceCanvas: View {
             .animation(reduceMotion ? nil : .snappy(duration: 0.2), value: store.activePane)
         }
         .background(theme.background)
+        // Bleed the canvas (and its pane backgrounds) through the bottom
+        // safe area so the page fills the screen instead of stopping above
+        // the home indicator in a black band. WKWebView computes its own
+        // `adjustedContentInset` from its on-screen safe-area overlap, so
+        // the page still scrolls to its true bottom even though the view
+        // itself now extends under the indicator.
+        .ignoresSafeArea(.container, edges: .bottom)
         // WKWebView manages its own keyboard insets. Letting SwiftUI also
         // resize the canvas made the two fight and the whole screen shake
         // whenever the keyboard appeared (typing in a page, or the SSH
@@ -150,16 +157,9 @@ private struct BrowserPaneView: View {
             if session.isLoading {
                 ProgressView(value: session.estimatedProgress)
                     .progressViewStyle(.linear)
-                    .tint(theme.tailnet)
+                    .tint(theme.mutedLabel)
                     .frame(maxWidth: .infinity)
                     .accessibilityLabel("Loading page")
-            }
-
-            if store.splitLayout != .single && store.activePane == pane {
-                Rectangle()
-                    .fill(theme.tailnet)
-                    .frame(height: 2)
-                    .allowsHitTesting(false)
             }
         }
         .overlay(alignment: .topLeading) {
@@ -281,6 +281,7 @@ private struct AdjustableSplitHandle: View {
 
     @Environment(BrowserTheme.self) private var theme
     @State private var dragStartRatio: Double?
+    @State private var dragStartLocation: CGPoint?
 
     let store: WorkspaceBrowserStore
     let axis: BrowserSplitAxis
@@ -322,17 +323,36 @@ private struct AdjustableSplitHandle: View {
         )
         .contentShape(Rectangle())
         .gesture(
-            DragGesture(minimumDistance: 0)
+            // Measured in the ROOT coordinate space, not `.local`. The
+            // handle sits inside the very stack whose proportions this
+            // drag is changing, so as the ratio updates the handle moves,
+            // which would move a `.local` gesture's own reference frame
+            // out from under it and feed back into itself — that was the
+            // shaking. The root space never moves, so translation derived
+            // from it (start location vs. current absolute location) stays
+            // a stable, direct function of the finger's position.
+            DragGesture(minimumDistance: 0, coordinateSpace: .named(BrowserRootCoordinateSpace.name))
                 .onChanged { value in
-                    if dragStartRatio == nil { dragStartRatio = ratio }
+                    if dragStartRatio == nil {
+                        dragStartRatio = ratio
+                        dragStartLocation = value.location
+                    }
                     let start = dragStartRatio ?? ratio
-                    let translation = axis == .horizontal ? value.translation.width : value.translation.height
+                    let startLocation = dragStartLocation ?? value.location
+                    let delta = axis == .horizontal
+                        ? value.location.x - startLocation.x
+                        : value.location.y - startLocation.y
                     // Persisting every tick JSON-encodes the full snapshot on
                     // the main thread mid-drag; defer it to the gesture end.
-                    setRatio(start + Double(translation / totalSpan), persistImmediately: false)
+                    // No animation here on purpose: an implicit animation on
+                    // the pane frames would fight a 60Hz gesture and read as
+                    // lag/wobble. The drag must be a direct, unanimated
+                    // follow; only the end-of-drag persist may settle.
+                    setRatio(start + Double(delta / totalSpan), persistImmediately: false)
                 }
                 .onEnded { _ in
                     dragStartRatio = nil
+                    dragStartLocation = nil
                     store.persistSplitRatio()
                 }
         )

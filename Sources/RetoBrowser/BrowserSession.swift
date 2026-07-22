@@ -64,6 +64,7 @@ final class BrowserSession: NSObject, WKNavigationDelegate, WKUIDelegate {
         }
         configuration.upgradeKnownHostsToHTTPS = true
         configuration.allowsInlineMediaPlayback = true
+        configuration.allowsPictureInPictureMediaPlayback = true
 
         let initialURL = BrowserURL.resolve(record.urlString)
         let initialSettings = settingsProvider(initialURL)

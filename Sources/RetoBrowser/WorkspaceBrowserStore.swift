@@ -29,6 +29,11 @@ final class WorkspaceBrowserStore {
     var webViewRevision = 0
     var tabDragState: TabDragState?
     var panePlacementPromptTabID: UUID?
+    /// Whether the compact-width island chrome shows its expanded surface.
+    /// Collapsed (false) is the default so the page occupies essentially
+    /// the whole screen; transient UI state, not persisted. iPad ignores
+    /// this and always shows the regular command bar.
+    var islandExpanded = false
 
     @ObservationIgnored let statusMonitor: ServiceStatusMonitor
     @ObservationIgnored let downloadManager: BrowserDownloadManager

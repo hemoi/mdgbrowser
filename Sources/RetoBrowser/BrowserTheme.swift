@@ -16,6 +16,47 @@ final class BrowserTheme {
 
     let compactRadius: CGFloat = 8
     let rowHeight: CGFloat = 34
+
+    /// Fill for a prominent, filled action control (e.g. an empty state's
+    /// primary button). Unlike `accent`, which tracks `.label` and therefore
+    /// flips to white in dark mode, this stays a saturated color in both
+    /// appearances so a fixed-color title drawn on top of it is always
+    /// legible. Never derive a filled control's background from `accent`.
+    var primaryActionFill: Color { tailnet }
+    /// Title color guaranteed to contrast `primaryActionFill` in both
+    /// appearances.
+    var primaryActionLabel: Color { Color.white }
+}
+
+/// Shared style for a prominent filled action button. Routes every
+/// "primary action" control through one place so its fill/label pairing
+/// can't drift out of contrast the way ad-hoc
+/// `.buttonStyle(.borderedProminent).tint(theme.accent)` call sites did.
+struct PrimaryActionButtonStyle: ButtonStyle {
+    let theme: BrowserTheme
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.system(size: 14, weight: .semibold))
+            .foregroundStyle(theme.primaryActionLabel)
+            .lineLimit(1)
+            .minimumScaleFactor(0.85)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+            .background(
+                theme.primaryActionFill.opacity(configuration.isPressed ? 0.82 : 1),
+                in: RoundedRectangle(cornerRadius: theme.compactRadius, style: .continuous)
+            )
+            .contentShape(RoundedRectangle(cornerRadius: theme.compactRadius, style: .continuous))
+    }
+}
+
+extension View {
+    /// Applies the app's shared prominent-action look: a saturated fill with
+    /// a foreground guaranteed to contrast it in both light and dark.
+    func primaryActionStyle(_ theme: BrowserTheme) -> some View {
+        buttonStyle(PrimaryActionButtonStyle(theme: theme))
+    }
 }
 
 /// Resolved appearance for the command bar when it mirrors the page's own

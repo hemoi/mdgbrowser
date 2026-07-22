@@ -83,6 +83,10 @@ pets_reference = resources_group.new_file("Pets")
 pets_reference.last_known_file_type = "folder"
 app_target.resources_build_phase.add_file_reference(pets_reference)
 
+content_blocker_reference = resources_group.new_file("ContentBlocker")
+content_blocker_reference.last_known_file_type = "folder"
+app_target.resources_build_phase.add_file_reference(content_blocker_reference)
+
 assets_reference = resources_group.new_file("Assets.xcassets")
 assets_reference.last_known_file_type = "folder.assetcatalog"
 app_target.resources_build_phase.add_file_reference(assets_reference)

@@ -1,6 +1,7 @@
 import Foundation
 import Observation
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// A pet listed by the codex-pets.net public API.
 struct CodexPetSummary: Codable, Equatable, Identifiable, Sendable {
@@ -189,13 +190,59 @@ final class CodexPetCatalog {
     }
 }
 
+/// One recommended place to find more pet packages, shown in the gallery's
+/// "Get more pets" section. Data, not scattered literals, so adding a source
+/// later is a one-line change here.
+struct PetAcquisitionSource: Identifiable {
+    let id: String
+    let title: String
+    let subtitle: String
+    let url: URL?
+    /// True when the destination is known not to resolve yet — shown as
+    /// "Coming soon" and not tappable, rather than presented as a working
+    /// link. Never mark a real, verified URL as a placeholder or vice versa.
+    let isPlaceholder: Bool
+
+    /// Verified 2026-07-23: itch.io's pixel-art tag and OpenGameArt.org both
+    /// resolve. reto.dev/pets does not exist yet (404) — listed as a
+    /// placeholder rather than a dead link.
+    static let recommended: [PetAcquisitionSource] = [
+        PetAcquisitionSource(
+            id: "itch-io-pixel-art",
+            title: "itch.io — pixel art assets",
+            subtitle: "Thousands of indie sprite and pixel-art packs, many free.",
+            url: URL(string: "https://itch.io/game-assets/tag-pixel-art"),
+            isPlaceholder: false
+        ),
+        PetAcquisitionSource(
+            id: "opengameart",
+            title: "OpenGameArt.org",
+            subtitle: "Free, open-licensed game sprites and animation sheets.",
+            url: URL(string: "https://opengameart.org"),
+            isPlaceholder: false
+        ),
+        PetAcquisitionSource(
+            id: "reto-pets-page",
+            title: "Reto pets page",
+            subtitle: "Coming soon — official pet packs from Reto.",
+            url: URL(string: "https://reto.dev/pets"),
+            isPlaceholder: true
+        )
+    ]
+}
+
 struct CodexPetGallerySheet: View {
     @Environment(BrowserTheme.self) private var theme
     @Environment(\.dismiss) private var dismiss
     @State private var catalog = CodexPetCatalog()
     @State private var query = ""
+    @State private var downloadsPackages: [URL] = []
+    @State private var importerPresented = false
+    @State private var installError: String?
 
     let petStore: BrowserPetStore
+    /// Opens a URL in a new browser tab — used by "Get more pets" sources.
+    var openInBrowser: (URL) -> Void = { _ in }
 
     var body: some View {
         NavigationStack {
@@ -210,8 +257,7 @@ struct CodexPetGallerySheet: View {
                         Text(errorMessage)
                     } actions: {
                         Button("Retry") { Task { await catalog.reload() } }
-                            .buttonStyle(.borderedProminent)
-                            .tint(theme.accent)
+                            .primaryActionStyle(theme)
                     }
                 } else {
                     galleryGrid
@@ -237,6 +283,30 @@ struct CodexPetGallerySheet: View {
             guard !Task.isCancelled else { return }
             await catalog.reload(query: query)
         }
+        .onAppear(perform: refreshDownloadsPackages)
+        .fileImporter(
+            isPresented: $importerPresented,
+            allowedContentTypes: importerContentTypes,
+            allowsMultipleSelection: false
+        ) { result in
+            handleImporterResult(result)
+        }
+        .alert(
+            "Couldn’t Install Pet",
+            isPresented: Binding(get: { installError != nil }, set: { if !$0 { installError = nil } })
+        ) {
+            Button("OK", role: .cancel) { installError = nil }
+        } message: {
+            Text(installError ?? "")
+        }
+    }
+
+    private var importerContentTypes: [UTType] {
+        var types: [UTType] = [.folder, .zip]
+        if let retopet = UTType(filenameExtension: "retopet") {
+            types.append(retopet)
+        }
+        return types
     }
 
     private var galleryGrid: some View {
@@ -249,6 +319,8 @@ struct CodexPetGallerySheet: View {
                     .padding(.horizontal, 16)
                     .padding(.top, 8)
             }
+
+            acquisitionSection
 
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 148), spacing: 12)], spacing: 12) {
                 ForEach(catalog.pets) { pet in
@@ -274,6 +346,140 @@ struct CodexPetGallerySheet: View {
             }
         }
         .background(theme.background)
+    }
+
+    // MARK: - Get more pets (C3.3)
+
+    private var acquisitionSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Get more pets")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(theme.mutedLabel)
+                .padding(.horizontal, 16)
+
+            VStack(spacing: 0) {
+                ForEach(PetAcquisitionSource.recommended) { source in
+                    acquisitionSourceRow(source)
+                    if source.id != PetAcquisitionSource.recommended.last?.id {
+                        Divider().padding(.leading, 16)
+                    }
+                }
+            }
+            .background(theme.raisedBackground, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .padding(.horizontal, 16)
+
+            if !downloadsPackages.isEmpty {
+                Text("Found in Downloads")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(theme.mutedLabel)
+                    .padding(.horizontal, 16)
+                    .padding(.top, 4)
+
+                VStack(spacing: 0) {
+                    ForEach(downloadsPackages, id: \.self) { url in
+                        downloadedPackageRow(url)
+                        if url != downloadsPackages.last {
+                            Divider().padding(.leading, 16)
+                        }
+                    }
+                }
+                .background(theme.raisedBackground, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .padding(.horizontal, 16)
+            }
+
+            Button {
+                importerPresented = true
+            } label: {
+                Label("Import a pet package…", systemImage: "square.and.arrow.down")
+                    .font(.system(size: 13, weight: .semibold))
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, 2)
+            .accessibilityIdentifier("pet.gallery.import")
+
+            Text("A pet package is a folder or .zip (or .retopet) containing pet.json and a spritesheet image.")
+                .font(.caption)
+                .foregroundStyle(theme.mutedLabel)
+                .padding(.horizontal, 16)
+
+            Divider().padding(.top, 4)
+        }
+        .padding(.top, 12)
+        .padding(.bottom, 4)
+    }
+
+    private func acquisitionSourceRow(_ source: PetAcquisitionSource) -> some View {
+        Button {
+            guard !source.isPlaceholder, let url = source.url else { return }
+            openInBrowser(url)
+        } label: {
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(source.title)
+                        .foregroundStyle(source.isPlaceholder ? theme.mutedLabel : theme.label)
+                    Text(source.subtitle)
+                        .font(.caption)
+                        .foregroundStyle(theme.mutedLabel)
+                }
+                Spacer()
+                if source.isPlaceholder {
+                    Text("Coming soon")
+                        .font(.caption)
+                        .foregroundStyle(theme.mutedLabel)
+                } else {
+                    Image(systemName: "arrow.up.right")
+                        .font(.caption)
+                        .foregroundStyle(theme.mutedLabel)
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(source.isPlaceholder)
+    }
+
+    private func downloadedPackageRow(_ url: URL) -> some View {
+        HStack {
+            Text(url.lastPathComponent)
+                .foregroundStyle(theme.label)
+                .lineLimit(1)
+            Spacer()
+            Button("Install") {
+                install(from: url)
+            }
+            .font(.system(size: 12, weight: .semibold))
+            .buttonStyle(.bordered)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
+    }
+
+    private func refreshDownloadsPackages() {
+        downloadsPackages = PetPackageInstaller.discoverPackages(in: BrowserDownloadManager.downloadsDirectory)
+    }
+
+    private func handleImporterResult(_ result: Result<[URL], any Error>) {
+        switch result {
+        case .success(let urls):
+            guard let url = urls.first else { return }
+            let didAccessScope = url.startAccessingSecurityScopedResource()
+            defer { if didAccessScope { url.stopAccessingSecurityScopedResource() } }
+            install(from: url)
+        case .failure(let error):
+            installError = error.localizedDescription
+        }
+    }
+
+    private func install(from url: URL) {
+        do {
+            let pet = try PetPackageInstaller.install(from: url, into: petStore)
+            petStore.applyPet(pet.id)
+            refreshDownloadsPackages()
+        } catch {
+            installError = error.localizedDescription
+        }
     }
 
     private func petCard(_ pet: CodexPetSummary) -> some View {

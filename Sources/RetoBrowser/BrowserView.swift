@@ -18,21 +18,58 @@ struct BrowserView: View {
         @Bindable var aiStore = aiStore
 
         ZStack(alignment: .leading) {
-            VStack(spacing: 0) {
-                CompactCommandBar(store: store, terminalStore: terminalStore, aiStore: aiStore)
-                WorkspaceCanvas(store: store)
-                    .overlay {
-                        if BrowserFeatureFlags.petEnabled {
-                            BrowserPetOverlay(
-                                browserStore: store,
-                                petStore: petStore,
-                                aiStore: aiStore,
-                                terminalStore: terminalStore
-                            )
+            if isPad {
+                VStack(spacing: 0) {
+                    CompactCommandBar(store: store, terminalStore: terminalStore, aiStore: aiStore)
+                    WorkspaceCanvas(store: store)
+                        .overlay {
+                            if BrowserFeatureFlags.petEnabled {
+                                BrowserPetOverlay(
+                                    browserStore: store,
+                                    petStore: petStore,
+                                    aiStore: aiStore,
+                                    terminalStore: terminalStore
+                                )
+                            }
                         }
+                }
+                .background(theme.background)
+            } else {
+                // The island chrome overlays the canvas rather than pushing
+                // it down, so the page reaches the very top of the screen
+                // when collapsed. WorkspaceCanvas itself is untouched here —
+                // only its container's safe area handling changes.
+                ZStack(alignment: .top) {
+                    WorkspaceCanvas(store: store)
+                        .ignoresSafeArea(.container, edges: .top)
+                        .overlay {
+                            if BrowserFeatureFlags.petEnabled {
+                                BrowserPetOverlay(
+                                    browserStore: store,
+                                    petStore: petStore,
+                                    aiStore: aiStore,
+                                    terminalStore: terminalStore
+                                )
+                            }
+                        }
+
+                    // Tapping the canvas while the island surface is
+                    // expanded collapses it, same as tapping the rail
+                    // again. This sits above the canvas only while
+                    // expanded, so it never intercepts ordinary page taps
+                    // (scrolling, links) the rest of the time.
+                    if store.islandExpanded {
+                        Color.clear
+                            .contentShape(Rectangle())
+                            .ignoresSafeArea()
+                            .onTapGesture { store.islandExpanded = false }
+                            .accessibilityHidden(true)
                     }
+
+                    IslandChrome(store: store, terminalStore: terminalStore, aiStore: aiStore)
+                }
+                .background(theme.background)
             }
-            .background(theme.background)
 
             if store.tabDragState != nil {
                 TabDragOverlay(store: store)

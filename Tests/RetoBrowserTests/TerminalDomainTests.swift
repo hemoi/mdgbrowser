@@ -123,6 +123,15 @@ final class TerminalDomainTests: XCTestCase {
         XCTAssertTrue(profile.privateKey.isEmpty)
     }
 
+    func testSSHPortFieldResolvesBlankAndInvalidTextToDefaultPort() {
+        XCTAssertEqual(SSHPortField.resolvedPort(from: ""), 22)
+        XCTAssertEqual(SSHPortField.resolvedPort(from: "   "), 22)
+        XCTAssertEqual(SSHPortField.resolvedPort(from: "2222"), 2_222)
+        XCTAssertEqual(SSHPortField.resolvedPort(from: "0"), 22)
+        XCTAssertEqual(SSHPortField.resolvedPort(from: "99999"), 22)
+        XCTAssertEqual(SSHPortField.resolvedPort(from: "abc"), 22)
+    }
+
     func testPrivateKeyProfileRoundTripsThroughEncryptedVaultPayload() throws {
         let original = SSHProfile(
             host: "key.example.com",

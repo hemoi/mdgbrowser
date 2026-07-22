@@ -1,0 +1,53 @@
+{
+  "version": "202607221728",
+  "generatedAt": "2026-07-22T17:42:21Z",
+  "sources": [
+    {
+      "name": "EasyList",
+      "url": "https://easylist.to/easylist/easylist.txt",
+      "listVersion": "202607221728",
+      "lastModified": "22 Jul 2026 17:28 UTC",
+      "commit": "30d355a79c1ca94680c29581b39480300a794bd9"
+    },
+    {
+      "name": "EasyPrivacy",
+      "url": "https://easylist.to/easylist/easyprivacy.txt",
+      "listVersion": "202607221720",
+      "lastModified": "22 Jul 2026 17:20 UTC",
+      "commit": "d232b1ad8ae5b878e09340c51678557993e66125"
+    }
+  ],
+  "license": "GPLv3 OR CC-BY-SA-3.0 (EasyList authors, https://easylist.to/)",
+  "files": {
+    "ads.json": {
+      "rules": 58049
+    },
+    "trackers.json": {
+      "rules": 55511
+    },
+    "cosmetic-lite.json": {
+      "rules": 33,
+      "selectors": 13326
+    }
+  },
+  "totalRulesWithCosmetic": 113593,
+  "totalRulesWithoutCosmetic": 113560,
+  "maxRulesPerCompiledList": 150000,
+  "conversionStats": {
+    "comments": 1046,
+    "cosmetic_domain": 8690,
+    "cosmetic_domain_selectors_dropped": 14379,
+    "cosmetic_generic": 13326,
+    "cosmetic_generic_selectors_kept": 13326,
+    "cosmetic_rules_emitted": 33,
+    "cosmetic_skipped_selector": 1771,
+    "cosmetic_skipped_unsupported": 610,
+    "cosmetic_total": 24397,
+    "lines_total": 139087,
+    "network_converted": 113562,
+    "network_skipped": 82,
+    "network_skipped_brace_quantifier": 19,
+    "network_skipped_disjunction": 5,
+    "network_total": 113644
+  }
+}
