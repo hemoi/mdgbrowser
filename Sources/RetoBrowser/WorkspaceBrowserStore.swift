@@ -705,6 +705,59 @@ final class WorkspaceBrowserStore {
         persist()
     }
 
+    /// D1.4 payoff: opens a group's bookmarks by laying their URLs into panes,
+    /// reusing the existing `addPane`/`open` APIs so the pane cap and the
+    /// "never mount one WKWebView twice" invariant are enforced exactly the
+    /// way manual pane placement already enforces them. URLs beyond the pane
+    /// cap open as background tabs instead of being dropped.
+    ///
+    /// This store has no dependency on `TerminalWorkspaceStore`, so opening
+    /// the group's SSH/tmux profiles is the caller's job (typically
+    /// `TerminalWorkspaceStore.openTab(profileID:)` for each profile in the
+    /// group), keeping the two stores one-way and independently testable.
+    @discardableResult
+    func openGroup(_ groupID: UUID) -> Int {
+        let urls = visibleBookmarks
+            .filter { $0.groupID == groupID }
+            .compactMap(\.url)
+        let placed = openGroupURLs(urls)
+        if !urls.isEmpty {
+            let name = groups.first(where: { $0.id == groupID })?.name ?? "group"
+            toastMessage = "Opened \(name)"
+        }
+        return placed
+    }
+
+    /// Lays `urls` into the active workspace's panes starting fresh from a
+    /// single pane (any existing split is collapsed first, not merged with),
+    /// up to the platform's pane cap — compact widths cap at 2, regular at
+    /// the full 4-slot grid. Anything left over is appended as a background
+    /// tab: present in the tab strip, not mounted in any pane, no WKWebView
+    /// created until it's selected. Returns the number of URLs placed into a
+    /// visible pane.
+    @discardableResult
+    func openGroupURLs(_ urls: [URL]) -> Int {
+        guard !urls.isEmpty else { return 0 }
+        if activeWorkspace.splitEnabled { toggleSplit() }
+
+        var iterator = urls.makeIterator()
+        guard let first = iterator.next() else { return 0 }
+        open(first, in: .primary)
+        var placed = 1
+
+        let cap = layoutIsCompact ? 2 : BrowserPane.slotOrder.count
+        while placed < cap, canAddPane, let url = iterator.next() {
+            addPane()
+            open(url, in: activePane)
+            placed += 1
+        }
+
+        while let url = iterator.next() {
+            addBackgroundTab(opening: url)
+        }
+        return placed
+    }
+
     func deleteGroup(_ groupID: UUID) {
         groups.removeAll(where: { $0.id == groupID })
         for index in bookmarks.indices where bookmarks[index].groupID == groupID { bookmarks[index].groupID = nil }
@@ -847,6 +900,22 @@ final class WorkspaceBrowserStore {
             workspace.tabs[index].title = title
             workspace.tabs[index].lastAccessedAt = .now
         }
+    }
+
+    /// Appends a tab without placing it in any pane slot — used by
+    /// `openGroupURLs` for URLs that don't fit the pane cap. It stays
+    /// reachable from the tab strip like any other tab; no WKWebView is
+    /// created until it's actually selected, matching the existing
+    /// hibernation model.
+    @discardableResult
+    private func addBackgroundTab(opening url: URL) -> UUID {
+        var tab = BrowserTabRecord.start()
+        tab.title = url.host() ?? url.absoluteString
+        tab.urlString = url.absoluteString
+        updateActiveWorkspace { workspace in
+            workspace.tabs.append(tab)
+        }
+        return tab.id
     }
 
     private func updateActiveWorkspace(_ mutation: (inout BrowserWorkspace) -> Void) {

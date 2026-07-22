@@ -132,6 +132,43 @@ final class TerminalDomainTests: XCTestCase {
         XCTAssertEqual(SSHPortField.resolvedPort(from: "abc"), 22)
     }
 
+    func testLegacyProfileWithoutGroupOrWorkspaceDecodesSharedEverywhere() throws {
+        // D1 migration guarantee: a profile saved before groupID/workspaceID
+        // existed must decode with both nil, keeping it visible in every
+        // workspace rather than disappearing behind one.
+        let id = UUID()
+        let legacy: [String: Any] = [
+            "id": id.uuidString,
+            "name": "Prod",
+            "host": "prod.example.com",
+            "port": 22,
+            "username": "modot",
+            "password": "secret",
+            "usesTmux": false,
+            "tmuxSession": "main"
+        ]
+        let data = try JSONSerialization.data(withJSONObject: legacy)
+
+        let profile = try JSONDecoder().decode(SSHProfile.self, from: data)
+
+        XCTAssertNil(profile.groupID)
+        XCTAssertNil(profile.workspaceID)
+        XCTAssertTrue(profile.isVisible(in: UUID()))
+    }
+
+    func testProfileVisibilityMatchesServiceBookmarkSemantics() {
+        let workspaceA = UUID()
+        let workspaceB = UUID()
+
+        let shared = SSHProfile(host: "shared.example.com", username: "modot", workspaceID: nil)
+        let scopedToA = SSHProfile(host: "a.example.com", username: "modot", workspaceID: workspaceA)
+
+        XCTAssertTrue(shared.isVisible(in: workspaceA))
+        XCTAssertTrue(shared.isVisible(in: workspaceB))
+        XCTAssertTrue(scopedToA.isVisible(in: workspaceA))
+        XCTAssertFalse(scopedToA.isVisible(in: workspaceB))
+    }
+
     func testPrivateKeyProfileRoundTripsThroughEncryptedVaultPayload() throws {
         let original = SSHProfile(
             host: "key.example.com",

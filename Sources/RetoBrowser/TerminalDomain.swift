@@ -30,6 +30,14 @@ struct SSHProfile: Codable, Equatable, Hashable, Identifiable, Sendable {
     var usesTmux: Bool
     var tmuxSession: String
     var hostKeyFingerprint: String?
+    /// The `ServiceGroup` this profile belongs to, so a group can contain
+    /// bookmarks and SSH targets side by side. Mirrors `ServiceBookmark.groupID`.
+    var groupID: UUID?
+    /// nil means the profile is available in every workspace. Mirrors
+    /// `ServiceBookmark.workspaceID` and `isVisible(in:)` exactly, so
+    /// existing (pre-D1) saved profiles keep working everywhere after
+    /// upgrading.
+    var workspaceID: UUID?
 
     init(
         id: UUID = UUID(),
@@ -43,7 +51,9 @@ struct SSHProfile: Codable, Equatable, Hashable, Identifiable, Sendable {
         privateKeyPassphrase: String = "",
         usesTmux: Bool = false,
         tmuxSession: String = "main",
-        hostKeyFingerprint: String? = nil
+        hostKeyFingerprint: String? = nil,
+        groupID: UUID? = nil,
+        workspaceID: UUID? = nil
     ) {
         self.id = id
         self.name = name
@@ -57,11 +67,19 @@ struct SSHProfile: Codable, Equatable, Hashable, Identifiable, Sendable {
         self.usesTmux = usesTmux
         self.tmuxSession = tmuxSession
         self.hostKeyFingerprint = hostKeyFingerprint
+        self.groupID = groupID
+        self.workspaceID = workspaceID
     }
 
     var displayName: String {
         let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmedName.isEmpty ? host : trimmedName
+    }
+
+    /// Same semantics as `ServiceBookmark.isVisible(in:)`: nil `workspaceID`
+    /// is shared across every workspace, otherwise it must match exactly.
+    func isVisible(in workspaceID: UUID) -> Bool {
+        self.workspaceID == nil || self.workspaceID == workspaceID
     }
 
     var endpoint: String {
@@ -113,6 +131,7 @@ struct SSHProfile: Codable, Equatable, Hashable, Identifiable, Sendable {
     private enum CodingKeys: String, CodingKey {
         case id, name, host, port, username, password, authenticationKind
         case privateKey, privateKeyPassphrase, usesTmux, tmuxSession, hostKeyFingerprint
+        case groupID, workspaceID
     }
 
     init(from decoder: any Decoder) throws {
@@ -129,6 +148,11 @@ struct SSHProfile: Codable, Equatable, Hashable, Identifiable, Sendable {
         usesTmux = try values.decodeIfPresent(Bool.self, forKey: .usesTmux) ?? false
         tmuxSession = try values.decodeIfPresent(String.self, forKey: .tmuxSession) ?? "main"
         hostKeyFingerprint = try values.decodeIfPresent(String.self, forKey: .hostKeyFingerprint)
+        // Both new fields decode to nil when absent from a pre-D1 stored
+        // profile, which keeps that profile visible in every workspace and
+        // out of any group — the required migration guarantee.
+        groupID = try values.decodeIfPresent(UUID.self, forKey: .groupID)
+        workspaceID = try values.decodeIfPresent(UUID.self, forKey: .workspaceID)
     }
 
     var tmuxStartupCommand: String? {

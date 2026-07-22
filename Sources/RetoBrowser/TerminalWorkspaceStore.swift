@@ -303,6 +303,14 @@ final class TerminalSession: Identifiable {
     }
 }
 
+/// Read-only summary of a `BrowserWorkspace`, handed to `TerminalWorkspaceStore`
+/// by the view layer so the SSH profile editor's workspace picker can show
+/// names without this store depending on `WorkspaceBrowserStore` directly.
+struct TerminalWorkspaceSummary: Identifiable, Equatable, Sendable {
+    let id: UUID
+    let name: String
+}
+
 @MainActor
 @Observable
 final class TerminalWorkspaceStore {
@@ -321,6 +329,40 @@ final class TerminalWorkspaceStore {
     var pendingHostTrust: HostTrustRequest?
     var storageErrorMessage: String?
     var tmuxDiscovery: [UUID: TmuxDiscoveryState] = [:]
+
+    /// The active `BrowserWorkspace.id`, mirrored one-way from
+    /// `WorkspaceBrowserStore` by the view layer (the same pattern used for
+    /// `WorkspaceBrowserStore.layoutIsCompact`) — this store never reaches
+    /// back into the browser store. nil until the view layer has synced at
+    /// least once, in which case profile visibility fails open (shows
+    /// everything) rather than hiding servers behind an unknown workspace.
+    var activeWorkspaceID: UUID?
+    /// Workspace names for the SSH profile editor's "Workspace" picker.
+    var availableWorkspaces: [TerminalWorkspaceSummary] = []
+    /// Group names for the SSH profile editor's "Group" picker and the
+    /// sidebar's group sections.
+    var availableGroups: [ServiceGroup] = []
+
+    /// Profiles visible from the active workspace, mirroring
+    /// `WorkspaceBrowserStore.visibleBookmarks` exactly: nil `workspaceID`
+    /// on the profile means shared, nil `activeWorkspaceID` here (not yet
+    /// wired by the view layer) means "unknown, so show everything."
+    var visibleProfiles: [SSHProfile] {
+        guard let activeWorkspaceID else { return profiles }
+        return profiles.filter { $0.isVisible(in: activeWorkspaceID) }
+    }
+
+    func setActiveWorkspace(_ workspaceID: UUID?) {
+        activeWorkspaceID = workspaceID
+    }
+
+    /// Whether a live tab's profile is scoped to a workspace other than the
+    /// active one. The tab itself is never closed for this — SSH connections
+    /// stay alive across workspace switches — this only flags it in the UI.
+    func tabBelongsToOtherWorkspace(_ tab: TerminalSession) -> Bool {
+        guard let activeWorkspaceID, let tabWorkspaceID = tab.profile.workspaceID else { return false }
+        return tabWorkspaceID != activeWorkspaceID
+    }
 
     /// Receives deduplicated agent events (the pet listens here). Optional:
     /// nothing depends on it being set.
@@ -491,6 +533,79 @@ final class TerminalWorkspaceStore {
         profiles.removeAll(where: { $0.id == profileID })
         if !persistProfiles() {
             profiles = previous
+        }
+    }
+
+    func assignProfile(_ profileID: UUID, toGroup groupID: UUID?) {
+        guard let index = profiles.firstIndex(where: { $0.id == profileID }) else { return }
+        let previous = profiles
+        profiles[index].groupID = groupID
+        guard persistProfiles() else {
+            profiles = previous
+            return
+        }
+        syncLiveTabProfile(profileID) { $0.groupID = groupID }
+    }
+
+    func assignProfile(_ profileID: UUID, toWorkspace workspaceID: UUID?) {
+        guard let index = profiles.firstIndex(where: { $0.id == profileID }) else { return }
+        let previous = profiles
+        profiles[index].workspaceID = workspaceID
+        guard persistProfiles() else {
+            profiles = previous
+            return
+        }
+        syncLiveTabProfile(profileID) { $0.workspaceID = workspaceID }
+    }
+
+    /// Clears `groupID` on member profiles when their group is deleted, the
+    /// same way `WorkspaceBrowserStore.deleteGroup` already does for
+    /// bookmarks and tabs. Called alongside that method by the view layer —
+    /// this store has no reference to `WorkspaceBrowserStore` to call it
+    /// automatically.
+    func clearGroup(_ groupID: UUID) {
+        let previous = profiles
+        var changed = false
+        for index in profiles.indices where profiles[index].groupID == groupID {
+            profiles[index].groupID = nil
+            changed = true
+        }
+        guard changed else { return }
+        guard persistProfiles() else {
+            profiles = previous
+            return
+        }
+        for tab in tabs where tab.profile.groupID == groupID {
+            tab.profile.groupID = nil
+        }
+    }
+
+    /// D1.5 decision: deleting a workspace resets profiles scoped to it back
+    /// to shared (nil) rather than deleting a server the user configured —
+    /// the same "never destroy user-entered connection details" reasoning
+    /// that already governs `ServiceBookmark`'s equivalent nil-means-shared
+    /// default. Called alongside `WorkspaceBrowserStore.deleteWorkspace` by
+    /// the view layer.
+    func resetWorkspaceScopedProfiles(_ workspaceID: UUID) {
+        let previous = profiles
+        var changed = false
+        for index in profiles.indices where profiles[index].workspaceID == workspaceID {
+            profiles[index].workspaceID = nil
+            changed = true
+        }
+        guard changed else { return }
+        guard persistProfiles() else {
+            profiles = previous
+            return
+        }
+        for tab in tabs where tab.profile.workspaceID == workspaceID {
+            tab.profile.workspaceID = nil
+        }
+    }
+
+    private func syncLiveTabProfile(_ profileID: UUID, _ mutate: (inout SSHProfile) -> Void) {
+        for tab in tabs where tab.profile.id == profileID {
+            mutate(&tab.profile)
         }
     }
 

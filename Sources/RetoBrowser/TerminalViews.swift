@@ -268,6 +268,10 @@ struct TerminalPanel: View {
 
     private func terminalTab(_ tab: TerminalSession) -> some View {
         let selected = tab.id == store.selectedTab?.id
+        // SSH stays connected across a workspace switch (it's expensive to
+        // rebuild, unlike a web view) — this only flags in the UI that the
+        // tab's profile belongs elsewhere, it never closes the tab.
+        let elsewhere = store.tabBelongsToOtherWorkspace(tab)
         return HStack(spacing: 0) {
             Button {
                 store.selectTab(tab.id)
@@ -276,6 +280,12 @@ struct TerminalPanel: View {
                     Circle()
                         .fill(statusColor(tab.state))
                         .frame(width: 6, height: 6)
+
+                    if elsewhere {
+                        Image(systemName: "square.on.square")
+                            .font(.system(size: 8, weight: .semibold))
+                            .accessibilityLabel("From another workspace")
+                    }
 
                     Text(tab.title)
                         .lineLimit(1)
@@ -311,13 +321,16 @@ struct TerminalPanel: View {
     }
 
     private var terminalAddMenu: some View {
+        // New-tab entry points show only profiles visible in the active
+        // workspace; "Manage Profiles" still reaches every saved profile so
+        // one can be reassigned to a different (or every) workspace.
         Menu {
-            if store.profiles.isEmpty {
+            if store.visibleProfiles.isEmpty {
                 Button("Add SSH Profile", systemImage: "server.rack") {
                     store.presentedSheet = .profiles
                 }
             } else {
-                ForEach(store.profiles) { profile in
+                ForEach(store.visibleProfiles) { profile in
                     Button {
                         store.openTab(profileID: profile.id)
                     } label: {
@@ -467,7 +480,7 @@ private struct TerminalEmptyState: View {
                     .multilineTextAlignment(.center)
             }
 
-            if store.profiles.isEmpty {
+            if store.visibleProfiles.isEmpty {
                 Button("Add SSH Profile", systemImage: "plus") {
                     store.presentedSheet = .profiles
                 }
@@ -475,7 +488,7 @@ private struct TerminalEmptyState: View {
                 .accessibilityIdentifier("terminal.empty.add-profile")
             } else {
                 Menu("Open SSH Profile", systemImage: "server.rack") {
-                    ForEach(store.profiles) { profile in
+                    ForEach(store.visibleProfiles) { profile in
                         Button(profile.displayName) { store.openTab(profileID: profile.id) }
                     }
                 }
@@ -729,6 +742,26 @@ struct SSHProfileEditor: View {
                     Text("tmux")
                 } footer: {
                     Text("Uses tmux -u new-session -A so the session survives disconnects and stays UTF-8 aware.")
+                }
+
+                Section {
+                    Picker("Group", selection: $profile.groupID) {
+                        Text("None").tag(UUID?.none)
+                        ForEach(store.availableGroups) { group in
+                            Text(group.name).tag(UUID?.some(group.id))
+                        }
+                    }
+
+                    Picker("Workspace", selection: $profile.workspaceID) {
+                        Text("All workspaces").tag(UUID?.none)
+                        ForEach(store.availableWorkspaces) { workspace in
+                            Text(workspace.name).tag(UUID?.some(workspace.id))
+                        }
+                    }
+                } header: {
+                    Text("Organization")
+                } footer: {
+                    Text("All workspaces keeps this connection visible everywhere, the same as a shared bookmark.")
                 }
 
                 if let fingerprint = profile.hostKeyFingerprint {

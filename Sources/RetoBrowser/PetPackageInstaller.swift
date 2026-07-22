@@ -16,6 +16,8 @@ enum PetPackageError: Error, LocalizedError, Equatable {
     case invalidGrid
     case invalidArchive
     case emptyID
+    case unsafePath
+    case archiveTooLarge
 
     var errorDescription: String? {
         switch self {
@@ -26,7 +28,43 @@ enum PetPackageError: Error, LocalizedError, Equatable {
         case .invalidGrid: "The pet's sprite grid isn't a supported size."
         case .invalidArchive: "That file isn't a readable zip archive."
         case .emptyID: "pet.json needs a non-empty \"id\"."
+        case .unsafePath: "This package points at a file path outside the package — that isn't allowed."
+        case .archiveTooLarge: "This package is too large, or claims an implausible amount of decompressed data."
         }
+    }
+}
+
+/// Validates untrusted, package-supplied strings before they ever become a
+/// filesystem path — the pet ID (used directly as an install directory
+/// name), the folder package's `spritesheetPath`, and every ZIP entry name
+/// all flow through here. Rejects zip-slip-style traversal
+/// (`../../../etc/passwd`), absolute paths, and Windows-style drive/backslash
+/// paths, none of which a legitimate pet package ever needs.
+enum PathSafety {
+    /// A path that may contain `/`-separated directory components (a ZIP
+    /// entry name, or a folder package's `spritesheetPath`) but must stay
+    /// relative and must never contain a `..` traversal segment.
+    static func isSafeRelativePath(_ path: String) -> Bool {
+        guard !path.isEmpty, !path.utf8.contains(0), !path.contains("\\") else { return false }
+        guard !path.hasPrefix("/"), !path.hasPrefix("~") else { return false }
+        // A Windows drive letter ("C:...") is absolute on the platform
+        // that authored the archive even though it isn't a path separator
+        // here — reject it rather than let it slip through as "relative".
+        if path.count >= 2, path[path.index(path.startIndex, offsetBy: 1)] == ":" {
+            return false
+        }
+        let components = path.split(separator: "/", omittingEmptySubsequences: true)
+        guard !components.isEmpty else { return false }
+        return !components.contains { $0 == ".." || $0 == "." }
+    }
+
+    /// A single path *component* — e.g. a pet ID that gets used directly as
+    /// a directory name — must not itself be a separator or traversal
+    /// segment.
+    static func isSafePathComponent(_ component: String) -> Bool {
+        guard !component.isEmpty, !component.utf8.contains(0) else { return false }
+        guard component != ".", component != ".." else { return false }
+        return !component.contains("/") && !component.contains("\\")
     }
 }
 
@@ -67,6 +105,10 @@ enum PetPackageInstaller {
         }
         let trimmedID = metadata.id.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedID.isEmpty else { throw PetPackageError.emptyID }
+        // `id` becomes a directory name verbatim in `BrowserPetStore.installPet`
+        // — reject anything that could escape that directory (e.g. "../../
+        // Library/Preferences/x") before it ever reaches the filesystem.
+        guard PathSafety.isSafePathComponent(trimmedID) else { throw PetPackageError.unsafePath }
 
         guard let image = UIImage(data: spritesheetData), let cgImage = image.cgImage else {
             throw PetPackageError.invalidSpritesheet
@@ -127,7 +169,21 @@ enum PetPackageInstaller {
         guard let metadata = try? JSONDecoder().decode(PetPackageMetadata.self, from: metadataData) else {
             throw PetPackageError.invalidMetadata
         }
-        let spritesheetURL = url.appendingPathComponent(metadata.spritesheetPath ?? "spritesheet.webp")
+        let relativeSpritesheetPath = metadata.spritesheetPath ?? "spritesheet.webp"
+        guard PathSafety.isSafeRelativePath(relativeSpritesheetPath) else {
+            throw PetPackageError.unsafePath
+        }
+        let spritesheetURL = url.appendingPathComponent(relativeSpritesheetPath)
+        // Defense in depth beyond the string check above: `resolvingSymlinksInPath()`
+        // (unlike `standardizedFileURL`) actually follows symlinks, so this
+        // also catches a package that plants a symlink pointing outside the
+        // folder and references it by an innocuous-looking relative name.
+        let root = url.resolvingSymlinksInPath().path
+        let rootPrefix = root.hasSuffix("/") ? root : root + "/"
+        let resolvedTarget = spritesheetURL.resolvingSymlinksInPath().path
+        guard resolvedTarget == root || resolvedTarget.hasPrefix(rootPrefix) else {
+            throw PetPackageError.unsafePath
+        }
         guard let spritesheetData = try? Data(contentsOf: spritesheetURL) else {
             throw PetPackageError.missingSpritesheet
         }
@@ -135,11 +191,21 @@ enum PetPackageInstaller {
     }
 
     private static func readArchive(_ url: URL) throws -> (metadata: Data, spritesheet: Data) {
+        // Check the file size on disk before reading it fully into memory —
+        // a multi-gigabyte download shouldn't get that far just to be
+        // rejected after the fact.
+        if let onDiskSize = try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int,
+           onDiskSize > MinimalZipReader.maxArchiveFileSize {
+            throw PetPackageError.archiveTooLarge
+        }
         let archiveData: Data
         do {
             archiveData = try Data(contentsOf: url)
         } catch {
             throw PetPackageError.invalidArchive
+        }
+        guard archiveData.count <= MinimalZipReader.maxArchiveFileSize else {
+            throw PetPackageError.archiveTooLarge
         }
         let reader = try MinimalZipReader(data: archiveData)
         guard let metadataData = reader.data(namedSuffix: "pet.json") else {
@@ -177,7 +243,30 @@ struct MinimalZipReader {
         let compressedSize: Int
         let uncompressedSize: Int
         let localHeaderOffset: Int
+
+        /// ZIP has no dedicated directory-entry flag — by convention a
+        /// trailing "/" marks one. Directory entries carry no content and
+        /// must never be handed out as if they were pet.json or a
+        /// spritesheet.
+        var isDirectory: Bool { name.hasSuffix("/") }
     }
+
+    /// Hard caps against zip bombs and pathological archives. A pet
+    /// package is pet.json plus a small handful of images, so these are
+    /// generous relative to that while still bounding how much memory and
+    /// CPU a malicious download can force us to spend before we've
+    /// validated anything.
+    static let maxArchiveFileSize = 64 * 1024 * 1024        // 64 MB on disk
+    private static let maxEntryCount = 256
+    private static let maxUncompressedEntrySize = 64 * 1024 * 1024   // 64 MB per entry
+    private static let maxTotalUncompressedSize = 128 * 1024 * 1024  // 128 MB across all entries
+    // Below this, an entry's compression ratio isn't checked at all — a
+    // handful of KB of highly-compressible solid color is normal, not a
+    // bomb. Above it, DEFLATE ratios climb rapidly for adversarial input
+    // (repeating zero bytes), so a generous but finite cap catches bombs
+    // without flagging ordinary images.
+    private static let ratioCheckFloor = 1 * 1024 * 1024
+    private static let maxCompressionRatio = 200
 
     private let bytes: [UInt8]
     private let entries: [Entry]
@@ -187,20 +276,22 @@ struct MinimalZipReader {
         entries = try Self.parseCentralDirectory(bytes)
     }
 
-    /// The bytes of the first entry whose path ends with `suffix`
-    /// (case-sensitive — matches both "pet.json" and "my-pet/pet.json").
+    /// The bytes of the first non-directory entry whose path ends with
+    /// `suffix` (case-sensitive — matches both "pet.json" and
+    /// "my-pet/pet.json").
     func data(namedSuffix suffix: String) -> Data? {
-        guard let entry = entries.first(where: { $0.name.hasSuffix(suffix) }) else { return nil }
+        guard let entry = entries.first(where: { !$0.isDirectory && $0.name.hasSuffix(suffix) }) else { return nil }
         return extract(entry)
     }
 
-    /// The first entry that looks like an image by extension — a
-    /// last-resort fallback when pet.json omits `spritesheetPath` and no
-    /// file is named the conventional "spritesheet.webp".
+    /// The first non-directory entry that looks like an image by
+    /// extension — a last-resort fallback when pet.json omits
+    /// `spritesheetPath` and no file is named the conventional
+    /// "spritesheet.webp".
     func firstImageData() -> Data? {
         let imageExtensions: Set<String> = ["webp", "png", "jpg", "jpeg"]
         guard let entry = entries.first(where: {
-            imageExtensions.contains(($0.name as NSString).pathExtension.lowercased())
+            !$0.isDirectory && imageExtensions.contains(($0.name as NSString).pathExtension.lowercased())
         }) else {
             return nil
         }
@@ -250,15 +341,24 @@ struct MinimalZipReader {
         guard let eocd = eocdOffset else { throw PetPackageError.invalidArchive }
 
         let entryCount = Int(readUInt16(bytes, eocd + 10))
+        guard entryCount > 0 else { throw PetPackageError.invalidArchive }
+        guard entryCount <= maxEntryCount else { throw PetPackageError.archiveTooLarge }
         let centralDirectoryOffset = Int(readUInt32(bytes, eocd + 16))
+        guard centralDirectoryOffset >= 0 else { throw PetPackageError.invalidArchive }
 
         var entries: [Entry] = []
+        var seenNames = Set<String>()
+        var totalUncompressedSize = 0
         var cursor = centralDirectoryOffset
         for _ in 0..<entryCount {
-            guard cursor >= 0, cursor + 46 <= bytes.count else { break }
+            // Every field below is read from the archive itself — never
+            // trust it against the actual byte count until it's been
+            // checked. A truncated or malformed central directory throws
+            // rather than silently returning a partial entry list.
+            guard cursor >= 0, cursor + 46 <= bytes.count else { throw PetPackageError.invalidArchive }
             guard bytes[cursor] == 0x50, bytes[cursor + 1] == 0x4B,
                   bytes[cursor + 2] == 0x01, bytes[cursor + 3] == 0x02 else {
-                break
+                throw PetPackageError.invalidArchive
             }
             let method = readUInt16(bytes, cursor + 10)
             let compressedSize = Int(readUInt32(bytes, cursor + 20))
@@ -266,11 +366,45 @@ struct MinimalZipReader {
             let nameLength = Int(readUInt16(bytes, cursor + 28))
             let extraLength = Int(readUInt16(bytes, cursor + 30))
             let commentLength = Int(readUInt16(bytes, cursor + 32))
+            let externalAttributes = readUInt32(bytes, cursor + 38)
             let localHeaderOffset = Int(readUInt32(bytes, cursor + 42))
             let nameStart = cursor + 46
             let nameEnd = nameStart + nameLength
-            guard nameEnd <= bytes.count else { break }
+            guard nameLength > 0, nameEnd <= bytes.count else { throw PetPackageError.invalidArchive }
             let name = String(decoding: bytes[nameStart..<nameEnd], as: UTF8.self)
+
+            // Zip-slip: an entry name that escapes the extraction
+            // directory (e.g. "../../../../Library/Preferences/x.plist")
+            // or is otherwise absolute.
+            guard PathSafety.isSafeRelativePath(name) else { throw PetPackageError.unsafePath }
+
+            // Symlink entries carry the Unix S_IFLNK bit in the top 16
+            // bits of the external file attributes. We never resolve or
+            // follow archive-declared symlinks — reject the archive.
+            let unixFileType = UInt32((externalAttributes >> 16) & 0xF000)
+            guard unixFileType != 0xA000 else { throw PetPackageError.unsafePath }
+
+            // Zip-bomb: bound both the single largest entry and the sum of
+            // every entry's *declared* uncompressed size, before ever
+            // allocating a buffer to inflate into.
+            guard uncompressedSize <= maxUncompressedEntrySize else { throw PetPackageError.archiveTooLarge }
+            if compressedSize == 0 {
+                // Zero compressed bytes can only ever decode to zero
+                // uncompressed bytes — anything else is a fabricated,
+                // impossible size field.
+                guard uncompressedSize == 0 else { throw PetPackageError.archiveTooLarge }
+            } else if uncompressedSize > ratioCheckFloor {
+                guard uncompressedSize / compressedSize <= maxCompressionRatio else {
+                    throw PetPackageError.archiveTooLarge
+                }
+            }
+            totalUncompressedSize += uncompressedSize
+            guard totalUncompressedSize <= maxTotalUncompressedSize else { throw PetPackageError.archiveTooLarge }
+
+            // Duplicate names are ambiguous at best (which one is "the"
+            // pet.json?) and a classic tool-confusion trick at worst.
+            guard seenNames.insert(name).inserted else { throw PetPackageError.invalidArchive }
+
             entries.append(Entry(
                 name: name,
                 compressionMethod: method,

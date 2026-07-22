@@ -505,6 +505,66 @@ final class WorkspaceBrowserStoreTests: XCTestCase {
         defaults.removeObject(forKey: key)
     }
 
+    func testOpenGroupURLsFillsPanesUpToRegularCapAndBackgroundsTheRest() {
+        let (store, _) = makeStore()
+        let urls = (1...5).map { URL(string: "https://service\($0).example.ts.net")! }
+
+        let placed = store.openGroupURLs(urls)
+
+        XCTAssertEqual(placed, 4)
+        XCTAssertEqual(store.splitLayout, .quad)
+        // Every occupied pane shows a different tab — one WKWebView must
+        // never mount twice.
+        let paneTabs = store.visiblePanes.map { store.selectedTabID(for: $0) }
+        XCTAssertEqual(Set(paneTabs).count, 4)
+        XCTAssertEqual(
+            Set(store.visiblePanes.map { store.selectedTab(for: $0).urlString }),
+            Set(urls.prefix(4).map(\.absoluteString))
+        )
+
+        // The URL that didn't fit becomes a background tab: present, not
+        // occupying any pane.
+        let overflowURL = urls[4].absoluteString
+        XCTAssertTrue(store.activeWorkspace.tabs.contains(where: { $0.urlString == overflowURL }))
+        XCTAssertFalse(store.visiblePanes.contains(where: { store.selectedTab(for: $0).urlString == overflowURL }))
+    }
+
+    func testOpenGroupURLsCapsAtTwoPanesOnCompactWidth() {
+        let (store, _) = makeStore()
+        store.layoutIsCompact = true
+        let urls = (1...3).map { URL(string: "https://service\($0).example.ts.net")! }
+
+        let placed = store.openGroupURLs(urls)
+
+        XCTAssertEqual(placed, 2)
+        XCTAssertEqual(store.visiblePanes.count, 2)
+        let overflowURL = urls[2].absoluteString
+        XCTAssertTrue(store.activeWorkspace.tabs.contains(where: { $0.urlString == overflowURL }))
+    }
+
+    func testOpenGroupOnlyOpensBookmarksVisibleInTheActiveWorkspace() {
+        let (store, _) = makeStore()
+        let mainID = store.activeWorkspaceID
+        let group = store.groups.first ?? ServiceGroup(id: UUID(), name: "Tailnet")
+        if store.groups.isEmpty { store.groups = [group] }
+
+        store.addBookmark(
+            title: "Shared", urlString: "https://shared.example.ts.net",
+            groupID: group.id, isPinned: false, workspaceID: nil
+        )
+        store.addWorkspace(name: "Ops")
+        store.addBookmark(
+            title: "OpsOnly", urlString: "https://ops-only.example.ts.net",
+            groupID: group.id, isPinned: false, workspaceID: store.activeWorkspaceID
+        )
+
+        store.selectWorkspace(mainID)
+        let placed = store.openGroup(group.id)
+
+        XCTAssertEqual(placed, 1)
+        XCTAssertEqual(store.selectedTab(for: .primary).urlString, "https://shared.example.ts.net")
+    }
+
     private func makeStore() -> (WorkspaceBrowserStore, UserDefaults) {
         let suiteName = "WorkspaceBrowserStoreTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!

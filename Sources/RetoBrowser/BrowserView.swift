@@ -39,6 +39,15 @@ struct BrowserView: View {
                 // it down, so the page reaches the very top of the screen
                 // when collapsed. WorkspaceCanvas itself is untouched here —
                 // only its container's safe area handling changes.
+                //
+                // The GeometryReader is the island detector: this level of
+                // the hierarchy does not ignore the safe area, so its proxy
+                // reports the real sensor-housing inset — and, unlike a
+                // one-shot UIKit window read, it re-evaluates when the inset
+                // arrives after launch or changes on rotation. A window read
+                // here raced cold launch (inset 0 → fallback bar, stuck for
+                // the whole session because nothing observable changed).
+                GeometryReader { proxy in
                 ZStack(alignment: .top) {
                     WorkspaceCanvas(store: store)
                         .ignoresSafeArea(.container, edges: .top)
@@ -66,9 +75,15 @@ struct BrowserView: View {
                             .accessibilityHidden(true)
                     }
 
-                    IslandChrome(store: store, terminalStore: terminalStore, aiStore: aiStore)
+                    IslandChrome(
+                        store: store,
+                        terminalStore: terminalStore,
+                        aiStore: aiStore,
+                        topInset: proxy.safeAreaInsets.top
+                    )
                 }
                 .background(theme.background)
+                }
             }
 
             if store.tabDragState != nil {

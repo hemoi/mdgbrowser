@@ -44,6 +44,25 @@ struct BrowserSidebar: View {
             Rectangle().fill(theme.border).frame(width: 0.5)
         }
         .safeAreaPadding(.bottom, 6)
+        // TerminalWorkspaceStore has no reference back to WorkspaceBrowserStore
+        // (see D1.2 — no two-way dependency), so this is the one-way "current
+        // workspace" setter the design calls for, mirrored the same way the
+        // view layer already hands layoutIsCompact to WorkspaceBrowserStore.
+        // The sidebar is the one place both stores already meet: workspace
+        // switching, group editing, and the SSH profile editor all launch
+        // from here.
+        .onAppear { syncTerminalWorkspaceContext() }
+        .onChange(of: store.activeWorkspaceID) { _, _ in syncTerminalWorkspaceContext() }
+        .onChange(of: store.workspaces) { _, _ in syncTerminalWorkspaceContext() }
+        .onChange(of: store.groups) { _, _ in syncTerminalWorkspaceContext() }
+    }
+
+    private func syncTerminalWorkspaceContext() {
+        terminalStore.setActiveWorkspace(store.activeWorkspaceID)
+        terminalStore.availableWorkspaces = store.workspaces.map {
+            TerminalWorkspaceSummary(id: $0.id, name: $0.name)
+        }
+        terminalStore.availableGroups = store.groups
     }
 
     private var sidebarHeader: some View {
@@ -107,6 +126,12 @@ struct BrowserSidebar: View {
                 .buttonStyle(.plain)
                 .contextMenu {
                     Button("Delete workspace", systemImage: "trash", role: .destructive) {
+                        // D1.5 decision: reset profiles scoped to this
+                        // workspace back to shared (nil) rather than delete a
+                        // server the user configured — the same reasoning
+                        // that already governs bookmarks' nil-means-shared
+                        // default.
+                        terminalStore.resetWorkspaceScopedProfiles(workspace.id)
                         store.deleteWorkspace(workspace.id)
                     }
                     .disabled(store.workspaces.count == 1)
@@ -199,14 +224,16 @@ struct BrowserSidebar: View {
 
     private func groupSection(_ group: ServiceGroup) -> some View {
         let bookmarks = store.visibleBookmarks.filter { $0.groupID == group.id && !$0.isPinned }
+        let profiles = terminalStore.visibleProfiles.filter { $0.groupID == group.id }
 
         return VStack(spacing: 0) {
             groupHeader(group)
 
-            if bookmarks.isEmpty {
+            if bookmarks.isEmpty && profiles.isEmpty {
                 emptyGroupRow
             } else {
                 ForEach(bookmarks) { bookmark in bookmarkRow(bookmark) }
+                ForEach(profiles) { profile in sshProfileRow(profile) }
             }
         }
     }
@@ -251,7 +278,13 @@ struct BrowserSidebar: View {
             .buttonStyle(.plain)
             .accessibilityIdentifier("sidebar.ssh.open")
 
-            if terminalStore.profiles.isEmpty {
+            // Profiles assigned to a group are listed under that group
+            // instead (see groupSection), so only ungrouped ones show here —
+            // the same split bookmarks already use between their group
+            // sections and the "Other" section.
+            let ungroupedProfiles = terminalStore.visibleProfiles.filter { $0.groupID == nil }
+
+            if ungroupedProfiles.isEmpty {
                 Button {
                     store.sidebarVisible = false
                     terminalStore.presentProfileEditor()
@@ -274,7 +307,7 @@ struct BrowserSidebar: View {
                 .buttonStyle(.plain)
                 .accessibilityIdentifier("sidebar.ssh.add")
             } else {
-                ForEach(terminalStore.profiles) { profile in
+                ForEach(ungroupedProfiles) { profile in
                     Button {
                         store.sidebarVisible = false
                         terminalStore.openTab(profileID: profile.id)
@@ -458,6 +491,61 @@ struct BrowserSidebar: View {
         }
     }
 
+    /// A group's SSH entry, styled like a bookmark row but reusing the
+    /// terminal/server iconography already used elsewhere for SSH profiles
+    /// (see `sshSection` below) rather than inventing new symbols.
+    private func sshProfileRow(_ profile: SSHProfile) -> some View {
+        Button {
+            store.sidebarVisible = false
+            terminalStore.openTab(profileID: profile.id)
+        } label: {
+            serviceRow(
+                icon: profile.usesTmux ? "rectangle.stack" : "server.rack",
+                title: profile.displayName,
+                subtitle: profile.endpoint,
+                tint: theme.mutedLabel,
+                status: nil,
+                hibernated: false
+            )
+        }
+        .buttonStyle(.plain)
+        .contextMenu {
+            Menu("Move to group") {
+                Button("None") { terminalStore.assignProfile(profile.id, toGroup: nil) }
+                ForEach(store.groups) { group in
+                    Button(group.name) { terminalStore.assignProfile(profile.id, toGroup: group.id) }
+                }
+            }
+
+            Menu("Workspace") {
+                Button {
+                    terminalStore.assignProfile(profile.id, toWorkspace: nil)
+                } label: {
+                    if profile.workspaceID == nil {
+                        Label("All workspaces", systemImage: "checkmark")
+                    } else {
+                        Text("All workspaces")
+                    }
+                }
+                ForEach(store.workspaces) { workspace in
+                    Button {
+                        terminalStore.assignProfile(profile.id, toWorkspace: workspace.id)
+                    } label: {
+                        if profile.workspaceID == workspace.id {
+                            Label(workspace.name, systemImage: "checkmark")
+                        } else {
+                            Text(workspace.name)
+                        }
+                    }
+                }
+            }
+
+            Button("Delete profile", systemImage: "trash", role: .destructive) {
+                terminalStore.deleteProfile(profile.id)
+            }
+        }
+    }
+
     private func serviceRow(
         icon: String,
         title: String,
@@ -563,7 +651,22 @@ struct BrowserSidebar: View {
             Spacer()
 
             Menu {
+                // D1.4 payoff: restores this group as a working context —
+                // its URLs laid into panes and its SSH/tmux profiles opened
+                // as terminal tabs — reusing the same addPane/open/openTab
+                // APIs a user would drive by hand.
+                Button("Open group", systemImage: "rectangle.grid.2x2") {
+                    store.openGroup(group.id)
+                    for profile in terminalStore.visibleProfiles where profile.groupID == group.id {
+                        terminalStore.openTab(profileID: profile.id)
+                    }
+                    store.sidebarVisible = false
+                }
+
                 Button("Delete group", systemImage: "trash", role: .destructive) {
+                    // Clears groupID on member profiles the same way
+                    // deleteGroup already does for bookmarks and tabs.
+                    terminalStore.clearGroup(group.id)
                     store.deleteGroup(group.id)
                 }
             } label: {

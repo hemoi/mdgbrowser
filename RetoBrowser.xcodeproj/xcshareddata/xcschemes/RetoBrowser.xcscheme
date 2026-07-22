@@ -14,7 +14,7 @@
             buildForAnalyzing = "YES">
             <BuildableReference
                BuildableIdentifier = "primary"
-               BlueprintIdentifier = "F254B3A80EF8E08DB01F8261"
+               BlueprintIdentifier = "2468BB31F3BA858FB44F48FB"
                BuildableName = "RetoBrowser.app"
                BlueprintName = "RetoBrowser"
                ReferencedContainer = "container:RetoBrowser.xcodeproj">
@@ -28,7 +28,7 @@
             buildForAnalyzing = "NO">
             <BuildableReference
                BuildableIdentifier = "primary"
-               BlueprintIdentifier = "5BD43C95F6D0342B16FE9FB7"
+               BlueprintIdentifier = "AD850CC6EE86987E3E3DF976"
                BuildableName = "RetoBrowserTests.xctest"
                BlueprintName = "RetoBrowserTests"
                ReferencedContainer = "container:RetoBrowser.xcodeproj">
@@ -44,7 +44,7 @@
       <MacroExpansion>
          <BuildableReference
             BuildableIdentifier = "primary"
-            BlueprintIdentifier = "F254B3A80EF8E08DB01F8261"
+            BlueprintIdentifier = "2468BB31F3BA858FB44F48FB"
             BuildableName = "RetoBrowser.app"
             BlueprintName = "RetoBrowser"
             ReferencedContainer = "container:RetoBrowser.xcodeproj">
@@ -55,7 +55,7 @@
             skipped = "NO">
             <BuildableReference
                BuildableIdentifier = "primary"
-               BlueprintIdentifier = "5BD43C95F6D0342B16FE9FB7"
+               BlueprintIdentifier = "AD850CC6EE86987E3E3DF976"
                BuildableName = "RetoBrowserTests.xctest"
                BlueprintName = "RetoBrowserTests"
                ReferencedContainer = "container:RetoBrowser.xcodeproj">
@@ -77,7 +77,7 @@
          runnableDebuggingMode = "0">
          <BuildableReference
             BuildableIdentifier = "primary"
-            BlueprintIdentifier = "F254B3A80EF8E08DB01F8261"
+            BlueprintIdentifier = "2468BB31F3BA858FB44F48FB"
             BuildableName = "RetoBrowser.app"
             BlueprintName = "RetoBrowser"
             ReferencedContainer = "container:RetoBrowser.xcodeproj">
@@ -94,7 +94,7 @@
          runnableDebuggingMode = "0">
          <BuildableReference
             BuildableIdentifier = "primary"
-            BlueprintIdentifier = "F254B3A80EF8E08DB01F8261"
+            BlueprintIdentifier = "2468BB31F3BA858FB44F48FB"
             BuildableName = "RetoBrowser.app"
             BlueprintName = "RetoBrowser"
             ReferencedContainer = "container:RetoBrowser.xcodeproj">
