@@ -6,10 +6,10 @@ import UIKit
 /// concurrently.
 enum GlassMetrics {
     /// Corner radius of the expanded surface panel.
-    static let surfaceCornerRadius: CGFloat = 22
+    static let surfaceCornerRadius: CGFloat = 30
     /// Corner radius of individual controls inside the surface (the address
     /// field, icon buttons).
-    static let controlCornerRadius: CGFloat = 12
+    static let controlCornerRadius: CGFloat = 20
     static let hairline: CGFloat = 0.75
 }
 
@@ -56,6 +56,7 @@ struct IslandIconButton: View {
                 }
                 .contentShape(Circle())
         }
+        .frame(width: 44, height: 44)
         .buttonStyle(.plain)
         .disabled(disabled)
         .opacity(disabled ? 0.35 : 1)

@@ -1,12 +1,13 @@
 import SwiftUI
+import UIKit
 
 /// Compact-width (iPhone) chrome that reads as an extension of the Dynamic
-/// Island itself: two small opaque-black pills float in the gutters on
-/// either side of the real island when collapsed, and tapping either one
-/// morphs the whole cluster into a black island surface with the full set
-/// of controls. Apps can't draw inside the island itself or receive taps on
-/// it — its frame isn't exposed by any public API — so this only ever draws
-/// in the gutters around it. Devices without a Dynamic Island (and iPad)
+/// Island itself: time, Back, the hardware island, Reload, and battery share
+/// one compact rail. A long press morphs that rail downward into the full
+/// browser surface. Apps can't draw inside the island or receive taps in the
+/// system-owned status bar, so this view replaces the system indicators with
+/// live in-app equivalents while the rail is active. Devices without a
+/// sensor housing (and iPad)
 /// fall back to the regular `CompactCommandBar`.
 struct IslandChrome: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -26,6 +27,7 @@ struct IslandChrome: View {
     let topInset: CGFloat
 
     @State private var showTabList = false
+    @State private var batteryLevel: Float = -1
 
     var body: some View {
         let inset = topInset
@@ -37,17 +39,15 @@ struct IslandChrome: View {
         // original way" — which also means landscape on an island device
         // falls back to the bar rather than trying to float pills next to
         // a housing that isn't on the top edge anymore.
-        let hasSensorHousing = inset > 30
+        let hasSensorHousing = inset > 50
 
         if hasSensorHousing {
             islandCluster(topInset: inset)
-                // The status bar owns taps in its band (the system's
-                // scroll-to-top zone) — while it is visible, touches on the
-                // pills are consumed before the app ever sees them (taps on
-                // the pills did nothing while a control outside the band
-                // responded normally). Hiding it releases the band, and the
-                // pills were overlapping the clock anyway.
                 .statusBarHidden(true)
+                .onAppear(perform: refreshBatteryLevel)
+                .onReceive(NotificationCenter.default.publisher(for: UIDevice.batteryLevelDidChangeNotification)) { _ in
+                    refreshBatteryLevel()
+                }
         } else {
             CompactCommandBar(store: store, terminalStore: terminalStore, aiStore: aiStore)
         }
@@ -62,44 +62,43 @@ struct IslandChrome: View {
             if store.islandExpanded {
                 expandedSurface(clusterHeight: clusterHeight)
             } else {
-                collapsedPills(clusterHeight: clusterHeight)
+                islandRail(clusterHeight: clusterHeight, embedded: false)
             }
             Spacer(minLength: 0)
         }
         .frame(maxWidth: .infinity, alignment: .top)
-        // Laid out in its normal, safe-area-respecting position (just below
-        // the sensor housing) and then pulled up by exactly that inset via
-        // `offset`, rather than `.ignoresSafeArea`. `.ignoresSafeArea`
-        // painted this content in the right place, but its hit-test frame
-        // didn't track the same out-of-band `topInset` this view sizes
-        // itself with, so the two silently drifted apart — every tap on
-        // the rail (buttons included) landed nowhere, which is why nothing
-        // here had ever been verified interactively. `offset` moves
-        // rendering and hit-testing by the identical single value, so they
-        // can't disagree.
+        // Hiding the system status bar releases this band for interaction.
+        // The rail supplies live time and battery indicators in the same
+        // positions, so the island can be one continuous, tappable line.
         .offset(y: -topInset)
         .animation(reduceMotion ? .linear(duration: 0.12) : .snappy(duration: 0.26), value: store.islandExpanded)
         .animation(reduceMotion ? .linear(duration: 0.12) : .snappy(duration: 0.22), value: showTabList)
     }
 
-    // MARK: Collapsed pills
+    // MARK: Island rail
 
-    private func collapsedPills(clusterHeight: CGFloat) -> some View {
+    private func islandRail(clusterHeight: CGFloat, embedded: Bool) -> some View {
         let session = store.session(for: store.activePane)
         // Empirically tuned against the iPhone 17 Pro simulator (402x874pt,
         // ~59pt top inset): wide enough that the reserve clears the real
         // island's own footprint, narrow enough that the two pills still
         // read as attached to it rather than floating off on their own.
-        let islandReserve: CGFloat = 128
-        let pillGap: CGFloat = 5
-        let pillHeight = min(max(clusterHeight - 12, 30), 38)
+        let islandReserve: CGFloat = 120
+        let pillHeight: CGFloat = 36
+        let statusColor = embedded ? IslandColors.onSurface : Color.primary
 
-        return HStack(spacing: pillGap) {
+        return HStack(spacing: 0) {
+            statusTime(color: statusColor)
+
+            Spacer(minLength: 0)
+
             pill(
                 systemName: "chevron.backward",
                 accessibilityLabel: "Back",
                 dimmed: !session.canGoBack,
-                height: pillHeight
+                height: pillHeight,
+                embedded: embedded,
+                action: { if session.canGoBack { session.goBack() } }
             )
             .accessibilityIdentifier("browser.island.pill.back")
 
@@ -109,42 +108,88 @@ struct IslandChrome: View {
                 systemName: session.isLoading ? "xmark" : "arrow.clockwise",
                 accessibilityLabel: session.isLoading ? "Stop loading" : "Reload page",
                 dimmed: false,
-                height: pillHeight
+                height: pillHeight,
+                embedded: embedded,
+                action: {
+                    if session.isLoading { session.stopLoading() } else { session.reload() }
+                }
             )
             .accessibilityIdentifier("browser.island.pill.reload")
+
+            Spacer(minLength: 0)
+
+            statusIndicators(color: statusColor)
         }
+        .padding(.horizontal, 12)
         .frame(height: clusterHeight)
         .frame(maxWidth: .infinity, alignment: .center)
     }
 
-    /// A single collapsed-state pill. Deliberately not independently
-    /// actionable (it doesn't go back or reload on its own) — every tap on
-    /// the cluster expands the full island surface, where those controls
-    /// live as real buttons; the pill just previews which side does what.
-    /// Its own drawn size stays pill-sized, but `.padding` before
-    /// `.contentShape` grows the tappable area well past that so it clears
-    /// the 44pt minimum without widening the visible chip and crowding the
-    /// real island.
+    private func statusTime(color: Color) -> some View {
+        TimelineView(.periodic(from: .now, by: 30)) { context in
+            Text(statusClockText(context.date))
+                .font(.system(size: 15, weight: .semibold, design: .rounded))
+                .monospacedDigit()
+                .foregroundStyle(color)
+                .lineLimit(1)
+        }
+        .frame(width: 58, alignment: .leading)
+        .accessibilityLabel("Current time")
+    }
+
+    private func statusIndicators(color: Color) -> some View {
+        HStack(spacing: 5) {
+            Image(systemName: "wifi")
+                .font(.system(size: 13, weight: .semibold))
+
+            Image(systemName: batterySymbol)
+                .font(.system(size: 17, weight: .medium))
+        }
+        .foregroundStyle(color)
+        .frame(width: 58, alignment: .trailing)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(Text(verbatim: "Wi-Fi, battery \(batteryPercentage) percent"))
+    }
+
+    /// A collapsed control performs its visible action on tap and expands
+    /// the browser surface on a deliberate long press. The visible capsule
+    /// is compact, while the outer frame preserves a 44pt touch target.
     private func pill(
         systemName: String,
         accessibilityLabel: String,
         dimmed: Bool,
-        height: CGFloat
+        height: CGFloat,
+        embedded: Bool,
+        action: @escaping () -> Void
     ) -> some View {
         Image(systemName: systemName)
             .font(.system(size: 13, weight: .semibold))
             .foregroundStyle(IslandColors.onSurface.opacity(dimmed ? 0.35 : 1))
-            .frame(width: height * 1.2, height: height)
-            .background(IslandColors.surface, in: Capsule())
-            .padding(.vertical, 8)
-            .padding(.horizontal, 7)
+            .frame(width: height * 1.18, height: height)
+            .background(embedded ? IslandColors.controlFill : IslandColors.surface, in: Capsule())
+            .frame(width: 44, height: 44)
             .contentShape(Rectangle())
-            .onTapGesture {
+            .gesture(
+                LongPressGesture(minimumDuration: 0.38)
+                    .exclusively(before: TapGesture())
+                    .onEnded { result in
+                        switch result {
+                        case .first:
+                            store.islandExpanded = true
+                        case .second:
+                            action()
+                        }
+                    }
+            )
+            .accessibilityAction {
+                action()
+            }
+            .accessibilityAction(named: "Expand browser controls") {
                 store.islandExpanded = true
             }
             .accessibilityLabel(accessibilityLabel)
             .accessibilityAddTraits(.isButton)
-            .accessibilityHint("Double tap to expand the browser controls.")
+            .accessibilityHint("Double tap to activate. Touch and hold to expand browser controls.")
     }
 
     // MARK: Expanded surface
@@ -153,26 +198,15 @@ struct IslandChrome: View {
         let session = store.session(for: store.activePane)
         let currentTabID = store.selectedTabID(for: store.activePane)
 
-        return VStack(spacing: 10) {
-            HStack(spacing: 8) {
-                IslandIconButton(systemName: "chevron.backward", accessibilityLabel: "Back", disabled: !session.canGoBack) {
-                    session.goBack()
-                }
+        return VStack(spacing: 8) {
+            islandRail(clusterHeight: clusterHeight, embedded: true)
+
+            AddressDisplayField(store: store, terminalStore: terminalStore, dragTabID: currentTabID)
+
+            HStack(spacing: 0) {
                 IslandIconButton(systemName: "chevron.forward", accessibilityLabel: "Forward", disabled: !session.canGoForward) {
                     session.goForward()
                 }
-
-                AddressDisplayField(store: store, terminalStore: terminalStore, dragTabID: currentTabID)
-
-                IslandIconButton(
-                    systemName: session.isLoading ? "xmark" : "arrow.clockwise",
-                    accessibilityLabel: session.isLoading ? "Stop loading" : "Reload page"
-                ) {
-                    if session.isLoading { session.stopLoading() } else { session.reload() }
-                }
-            }
-
-            HStack(spacing: 8) {
                 IslandIconButton(systemName: "terminal", accessibilityLabel: "SSH terminal", selected: terminalStore.presentedSurface != nil) {
                     terminalStore.toggleSurface()
                 }
@@ -211,11 +245,10 @@ struct IslandChrome: View {
                     .transition(.opacity.combined(with: .move(edge: .top)))
             }
         }
-        .padding(.horizontal, 12)
-        .padding(.top, clusterHeight > 30 ? clusterHeight - 10 : 12)
-        .padding(.bottom, 12)
-        .background(IslandColors.surface, in: RoundedRectangle(cornerRadius: GlassMetrics.surfaceCornerRadius, style: .continuous))
         .padding(.horizontal, 8)
+        .padding(.bottom, 10)
+        .background(IslandColors.surface, in: RoundedRectangle(cornerRadius: GlassMetrics.surfaceCornerRadius, style: .continuous))
+        .padding(.horizontal, 6)
         .contentShape(Rectangle())
         .onTapGesture {
             // Buttons inside the surface capture their own taps first, so
@@ -229,6 +262,31 @@ struct IslandChrome: View {
             store.islandExpanded = false
         }
         .accessibilityIdentifier("browser.island.surface")
+    }
+
+    private var batteryPercentage: Int {
+        guard batteryLevel >= 0 else { return 100 }
+        return Int((batteryLevel * 100).rounded())
+    }
+
+    private var batterySymbol: String {
+        switch batteryPercentage {
+        case ..<13: "battery.0percent"
+        case ..<38: "battery.25percent"
+        case ..<63: "battery.50percent"
+        case ..<88: "battery.75percent"
+        default: "battery.100percent"
+        }
+    }
+
+    private func statusClockText(_ date: Date) -> String {
+        let components = Calendar.current.dateComponents([.hour, .minute], from: date)
+        return String(format: "%02d:%02d", components.hour ?? 0, components.minute ?? 0)
+    }
+
+    private func refreshBatteryLevel() {
+        UIDevice.current.isBatteryMonitoringEnabled = true
+        batteryLevel = UIDevice.current.batteryLevel
     }
 
     private var islandMenu: some View {
@@ -277,6 +335,7 @@ struct IslandChrome: View {
                 .foregroundStyle(IslandColors.onSurface)
                 .frame(width: 34, height: 34)
                 .background(IslandColors.controlFill, in: Circle())
+                .frame(width: 44, height: 44)
                 .contentShape(Circle())
         }
         .menuStyle(.button)
@@ -380,7 +439,7 @@ private struct AddressDisplayField: View {
             .fixedSize(horizontal: false, vertical: false)
         }
         .padding(.horizontal, 10)
-        .frame(height: 38)
+        .frame(height: 40)
         .frame(maxWidth: .infinity)
         .background(IslandColors.controlFill, in: RoundedRectangle(cornerRadius: GlassMetrics.controlCornerRadius, style: .continuous))
         .overlay {

@@ -62,19 +62,6 @@ struct BrowserView: View {
                             }
                         }
 
-                    // Tapping the canvas while the island surface is
-                    // expanded collapses it, same as tapping the rail
-                    // again. This sits above the canvas only while
-                    // expanded, so it never intercepts ordinary page taps
-                    // (scrolling, links) the rest of the time.
-                    if store.islandExpanded {
-                        Color.clear
-                            .contentShape(Rectangle())
-                            .ignoresSafeArea()
-                            .onTapGesture { store.islandExpanded = false }
-                            .accessibilityHidden(true)
-                    }
-
                     IslandChrome(
                         store: store,
                         terminalStore: terminalStore,
