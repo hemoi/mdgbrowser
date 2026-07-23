@@ -457,6 +457,20 @@ private struct AddressDisplayField: View {
             .keyboardType(.webSearch)
             .submitLabel(.go)
             .focused($focused)
+            .onChange(of: focused) { _, isFocused in
+                guard isFocused else { return }
+                // Wait one run-loop turn so the field has become first
+                // responder and swapped from its short reading text to the
+                // exact editable address before selecting it.
+                DispatchQueue.main.async {
+                    UIApplication.shared.sendAction(
+                        #selector(UIResponder.selectAll(_:)),
+                        to: nil,
+                        from: nil,
+                        for: nil
+                    )
+                }
+            }
             .onSubmit(submit)
             // Reading state doesn't need the field to keep stretching once
             // its shortened text is much narrower than the full URL would

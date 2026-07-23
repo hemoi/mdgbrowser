@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 struct CompactCommandBar: View {
     @Environment(BrowserTheme.self) private var theme
@@ -395,6 +396,17 @@ private struct CompactAddressField: View {
                 .keyboardType(.webSearch)
                 .submitLabel(.go)
                 .focused($focused)
+                .onChange(of: focused) { _, isFocused in
+                    guard isFocused else { return }
+                    DispatchQueue.main.async {
+                        UIApplication.shared.sendAction(
+                            #selector(UIResponder.selectAll(_:)),
+                            to: nil,
+                            from: nil,
+                            for: nil
+                        )
+                    }
+                }
                 .onSubmit {
                     let submittedAddress = session.address.trimmingCharacters(in: .whitespacesAndNewlines)
                     if submittedAddress.lowercased().hasPrefix("ssh://") {
