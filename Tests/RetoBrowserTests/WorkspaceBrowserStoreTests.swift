@@ -3,6 +3,21 @@ import XCTest
 
 @MainActor
 final class WorkspaceBrowserStoreTests: XCTestCase {
+    func testIslandCollapseKeepsTabShelfWhenTabListIsEnabled() {
+        XCTAssertEqual(
+            IslandChromePresentation.resolve(isExpanded: false, showsTabs: true),
+            .collapsedWithTabs
+        )
+        XCTAssertEqual(
+            IslandChromePresentation.resolve(isExpanded: false, showsTabs: false),
+            .collapsed
+        )
+        XCTAssertEqual(
+            IslandChromePresentation.resolve(isExpanded: true, showsTabs: true),
+            .expanded
+        )
+    }
+
     func testSplitCreatesDistinctPaneTabs() {
         let (store, _) = makeStore()
 

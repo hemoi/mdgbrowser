@@ -1,6 +1,17 @@
 import SwiftUI
 import UIKit
 
+enum IslandChromePresentation: Equatable {
+    case collapsed
+    case collapsedWithTabs
+    case expanded
+
+    static func resolve(isExpanded: Bool, showsTabs: Bool) -> IslandChromePresentation {
+        if isExpanded { return .expanded }
+        return showsTabs ? .collapsedWithTabs : .collapsed
+    }
+}
+
 /// Compact-width (iPhone) chrome that reads as an extension of the Dynamic
 /// Island itself: time, Back, the hardware island, Reload, and battery share
 /// one compact rail. Tapping the center island zone morphs that rail into the
@@ -56,17 +67,29 @@ struct IslandChrome: View {
 
     private func islandCluster(topInset: CGFloat) -> some View {
         let clusterHeight = max(topInset, 44)
+        let presentation = IslandChromePresentation.resolve(
+            isExpanded: store.islandExpanded,
+            showsTabs: showTabList
+        )
 
         return VStack(spacing: 0) {
-            if store.islandExpanded {
+            switch presentation {
+            case .expanded:
                 expandedSurface(clusterHeight: clusterHeight)
                     .transition(
                         reduceMotion
                             ? .opacity
                             : .scale(scale: 0.94, anchor: .top).combined(with: .opacity)
                     )
-            } else {
-                islandRail(clusterHeight: clusterHeight, embedded: false)
+            case .collapsedWithTabs:
+                collapsedTabbedSurface(clusterHeight: clusterHeight)
+                    .transition(
+                        reduceMotion
+                            ? .opacity
+                            : .scale(scale: 0.96, anchor: .top).combined(with: .opacity)
+                    )
+            case .collapsed:
+                islandRail(clusterHeight: clusterHeight, embedded: false, centerActivatesIsland: true)
                     .transition(.opacity)
             }
             Spacer(minLength: 0)
@@ -92,7 +115,11 @@ struct IslandChrome: View {
 
     // MARK: Island rail
 
-    private func islandRail(clusterHeight: CGFloat, embedded: Bool) -> some View {
+    private func islandRail(
+        clusterHeight: CGFloat,
+        embedded: Bool,
+        centerActivatesIsland: Bool
+    ) -> some View {
         let session = store.session(for: store.activePane)
         // Empirically tuned against the iPhone 17 Pro simulator (402x874pt,
         // ~59pt top inset): wide enough that the reserve clears the real
@@ -117,10 +144,10 @@ struct IslandChrome: View {
                 )
                 .accessibilityIdentifier("browser.island.pill.back")
 
-                if embedded {
-                    Color.clear.frame(width: islandReserve, height: 44)
-                } else {
+                if centerActivatesIsland {
                     islandActivationZone(width: islandReserve, height: 44)
+                } else {
+                    Color.clear.frame(width: islandReserve, height: 44)
                 }
 
                 pill(
@@ -212,12 +239,37 @@ struct IslandChrome: View {
 
     // MARK: Expanded surface
 
+    /// When the tab list is left on, collapsing removes the address and tool
+    /// rows but preserves the tabs as a shelf grown directly from the island.
+    /// The rail and shelf share one silhouette so the tabs do not read as a
+    /// separate floating toolbar.
+    private func collapsedTabbedSurface(clusterHeight: CGFloat) -> some View {
+        VStack(spacing: 0) {
+            islandRail(clusterHeight: clusterHeight, embedded: true, centerActivatesIsland: true)
+
+            IslandTabList(store: store)
+                .padding(.horizontal, 2)
+                .padding(.bottom, 8)
+        }
+        .background(
+            IslandColors.expandedSurface,
+            in: RoundedRectangle(cornerRadius: GlassMetrics.surfaceCornerRadius, style: .continuous)
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: GlassMetrics.surfaceCornerRadius, style: .continuous)
+                .stroke(IslandColors.onSurface.opacity(0.07), lineWidth: GlassMetrics.hairline)
+        }
+        .padding(.horizontal, 6)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("browser.island.collapsed-tabs")
+    }
+
     private func expandedSurface(clusterHeight: CGFloat) -> some View {
         let session = store.session(for: store.activePane)
         let currentTabID = store.selectedTabID(for: store.activePane)
 
         return VStack(spacing: 8) {
-            islandRail(clusterHeight: clusterHeight, embedded: true)
+            islandRail(clusterHeight: clusterHeight, embedded: true, centerActivatesIsland: false)
 
             AddressDisplayField(store: store, terminalStore: terminalStore, dragTabID: currentTabID)
 
