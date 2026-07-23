@@ -1,0 +1,49 @@
+name: iOS CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ios-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: test
+    runs-on: macos-26
+    timeout-minutes: 45
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Select Xcode 26.4
+        run: sudo xcode-select -s /Applications/Xcode_26.4.app/Contents/Developer
+
+      - name: Run iOS simulator tests
+        run: |
+          set -o pipefail
+          xcodebuild test \
+            -project RetoBrowser.xcodeproj \
+            -scheme RetoBrowser \
+            -destination 'platform=iOS Simulator,name=iPhone 17 Pro' \
+            -resultBundlePath RetoBrowserTests.xcresult \
+            | tee xcodebuild.log
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: RetoBrowserTests-${{ github.run_number }}
+          path: |
+            RetoBrowserTests.xcresult
+            xcodebuild.log
+          if-no-files-found: warn
+          retention-days: 14
