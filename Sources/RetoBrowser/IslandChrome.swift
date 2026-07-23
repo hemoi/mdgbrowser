@@ -127,12 +127,11 @@ struct IslandChrome: View {
         // read as attached to it rather than floating off on their own.
         let islandReserve: CGFloat = 120
         let pillHeight: CGFloat = 36
+        let statusRailGap: CGFloat = 8
         let statusColor = embedded ? IslandColors.onSurface : Color.primary
 
-        return HStack(spacing: 0) {
+        return HStack(spacing: statusRailGap) {
             statusTime(color: statusColor)
-
-            Spacer(minLength: 0)
 
             HStack(spacing: 0) {
                 pill(
@@ -163,8 +162,6 @@ struct IslandChrome: View {
             }
             .frame(height: 44)
             .background(IslandColors.surface, in: Capsule())
-
-            Spacer(minLength: 0)
 
             statusIndicators(color: statusColor)
         }
