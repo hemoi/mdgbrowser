@@ -5,8 +5,9 @@ import UIKit
 /// `BrowserTheme.swift`) because another workstream owns that file
 /// concurrently.
 enum GlassMetrics {
-    /// Corner radius of the expanded surface panel.
-    static let surfaceCornerRadius: CGFloat = 30
+    /// A continuous radius close to the iPhone display silhouette. Using the
+    /// same value on every corner keeps the expanded island as one object.
+    static let surfaceCornerRadius: CGFloat = 40
     /// Keeps the expanded shell's top edge visible below the screen edge
     /// while the inline controls remain aligned with the hardware island.
     static let surfaceTopInset: CGFloat = 8
@@ -14,6 +15,31 @@ enum GlassMetrics {
     /// field, icon buttons).
     static let controlCornerRadius: CGFloat = 20
     static let hairline: CGFloat = 0.75
+}
+
+/// Deliberately small haptic vocabulary for high-value state changes only.
+/// UIKit automatically follows the device's System Haptics preference.
+@MainActor
+enum RetoHaptics {
+    static func islandTransition(expanded: Bool) {
+        UIImpactFeedbackGenerator(style: expanded ? .light : .soft).impactOccurred(intensity: 0.7)
+    }
+
+    static func connectionStarted() {
+        UIImpactFeedbackGenerator(style: .soft).impactOccurred(intensity: 0.65)
+    }
+
+    static func success() {
+        UINotificationFeedbackGenerator().notificationOccurred(.success)
+    }
+
+    static func attention() {
+        UINotificationFeedbackGenerator().notificationOccurred(.warning)
+    }
+
+    static func failure() {
+        UINotificationFeedbackGenerator().notificationOccurred(.error)
+    }
 }
 
 /// Fixed colors for the island chrome. The hardware Dynamic Island is an

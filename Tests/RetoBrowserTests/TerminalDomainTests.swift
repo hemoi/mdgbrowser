@@ -2,6 +2,25 @@ import XCTest
 @testable import RetoBrowser
 
 final class TerminalDomainTests: XCTestCase {
+    func testLocalPortForwardValidationAndLoopbackURL() throws {
+        let profileID = UUID()
+        let forward = SSHLocalPortForward(
+            name: "Vite",
+            profileID: profileID,
+            localPort: 5_173,
+            remoteHost: "127.0.0.1",
+            remotePort: 5_173
+        )
+
+        XCTAssertNil(forward.validationMessage)
+        XCTAssertEqual(forward.localURL?.absoluteString, "http://127.0.0.1:5173")
+        XCTAssertEqual(forward.routeLabel, "localhost:5173 → 127.0.0.1:5173")
+
+        var invalid = forward
+        invalid.localPort = 0
+        XCTAssertEqual(invalid.validationMessage, "Local port must be between 1 and 65535.")
+    }
+
     func testTmuxCommandAttachesOrCreatesUTF8Session() {
         let profile = SSHProfile(
             name: "Ops",

@@ -405,6 +405,22 @@ struct TerminalAgentNotification: Sendable {
         let detail = body.isEmpty ? event.event : body
         return "\(agentLabel) · \(event.sessionName): \(detail)"
     }
+
+    /// Only events that benefit from interruption become local alerts and
+    /// haptics. Other metadata still reaches the pet quietly.
+    var userEventKind: TerminalUserEvent.Kind? {
+        let normalized = event.event.lowercased()
+        if ["approval", "approve", "permission", "confirm", "waiting", "input"].contains(where: normalized.contains) {
+            return .approval
+        }
+        if ["done", "complete", "completed", "stop", "finished", "success"].contains(where: normalized.contains) {
+            return .completed
+        }
+        if ["fail", "failed", "error", "denied"].contains(where: normalized.contains) {
+            return .failure
+        }
+        return nil
+    }
 }
 
 // MARK: - Matching discovered sessions to open tabs

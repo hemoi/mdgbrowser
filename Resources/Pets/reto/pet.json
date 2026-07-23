@@ -1,0 +1,7 @@
+{
+  "id": "reto",
+  "displayName": "Reto",
+  "description": "Reto's quiet companion that reads, thinks, reacts, and watches remote work.",
+  "spritesheetPath": "spritesheet.webp",
+  "eventAnimations": ["jumping", "failed", "waiting", "review"]
+}

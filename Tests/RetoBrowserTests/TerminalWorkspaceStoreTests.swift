@@ -76,6 +76,27 @@ final class TerminalWorkspaceStoreTests: XCTestCase {
         XCTAssertFalse(store.phoneSheetMinimized)
     }
 
+    func testPortForwardPersistsAndRejectsDuplicateLocalPort() throws {
+        let defaults = makeDefaults()
+        let vault = InMemorySSHProfileVault()
+        let profile = SSHProfile(host: "dev.example.com", username: "modot", password: "x")
+        vault.stored = [profile]
+        let store = TerminalWorkspaceStore(vault: vault, defaults: defaults)
+        let first = SSHLocalPortForward(
+            name: "Web",
+            profileID: profile.id,
+            localPort: 3_000,
+            remoteHost: "127.0.0.1",
+            remotePort: 3_000
+        )
+
+        XCTAssertTrue(store.savePortForward(first))
+        XCTAssertFalse(store.savePortForward(SSHLocalPortForward(profileID: profile.id)))
+
+        let restored = TerminalWorkspaceStore(vault: vault, defaults: defaults)
+        XCTAssertEqual(restored.portForwards, [first])
+    }
+
     func testVisibleProfilesMatchesServiceBookmarkVisibilitySemantics() {
         let (store, _) = makeStore()
         let workspaceA = UUID()

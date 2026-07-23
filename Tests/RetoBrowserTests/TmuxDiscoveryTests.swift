@@ -341,5 +341,22 @@ final class TmuxDiscoveryTests: XCTestCase {
             tabID: nil
         )
         XCTAssertEqual(declared.petMessageText, "Codex · main: Task finished")
+        XCTAssertEqual(declared.userEventKind, .completed)
+
+        let approval = TerminalAgentNotification(
+            event: TmuxAgentEvent(
+                paneID: "%2",
+                sessionID: "$1",
+                sessionName: "main",
+                detection: .declared(.claude),
+                event: "approval_required",
+                message: "Approve shell command",
+                eventAt: nil
+            ),
+            profileID: UUID(),
+            profileName: "Ops",
+            tabID: nil
+        )
+        XCTAssertEqual(approval.userEventKind, .approval)
     }
 }

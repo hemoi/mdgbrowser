@@ -45,7 +45,7 @@ final class BrowserPetStoreTests: XCTestCase {
 
         // A 4-row atlas (idle/runningRight/runningLeft/waving, rows 0-3) has
         // no physical row for jumping (4), failed (5), waiting (6), or
-        // review (8) — same shape as the bundled Banana sample. Rows are
+        // review (8). Rows are
         // gated by `row < rows` (see testResolvedAnimationRespectsPartialRowCounts),
         // so 5 rows would already reach jumping's row (4) — it takes 4 rows
         // to exclude every event state.
@@ -148,6 +148,30 @@ final class BrowserPetStoreTests: XCTestCase {
             petsDirectory: temporaryPetsDirectory()
         )
         XCTAssertEqual(restored.quickActions.first, .sendKey(.ctrlC))
+    }
+
+    func testRetoIsTheBundledDefaultAndLegacySelectionsMigrate() throws {
+        let suiteName = "BrowserPetStoreTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let snapshot = BrowserPetSnapshot(
+            scale: 1,
+            position: .defaultPosition,
+            quickActions: PetQuickAction.defaults,
+            selectedPetID: "banana"
+        )
+        defaults.set(try JSONEncoder().encode(snapshot), forKey: "pet-test")
+
+        let store = BrowserPetStore(
+            defaults: defaults,
+            storageKey: "pet-test",
+            petsDirectory: temporaryPetsDirectory()
+        )
+
+        XCTAssertNil(store.selectedPetID)
+        XCTAssertEqual(store.effectiveSelectedPetID, "reto")
+        XCTAssertEqual(store.activeAtlas.key, "bundled.reto")
+        XCTAssertEqual(store.bundledPets.map(\.id), ["reto"])
     }
 
     func testClearingEverySlotKeepsOneAction() {

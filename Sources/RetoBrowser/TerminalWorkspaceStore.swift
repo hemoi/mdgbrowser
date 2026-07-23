@@ -2,6 +2,7 @@ import Observation
 import SwiftTerm
 import SwiftUI
 import UIKit
+import UserNotifications
 
 @MainActor
 final class RetoTerminalView: TerminalView, @preconcurrency TerminalViewDelegate {
@@ -93,6 +94,7 @@ final class RetoTerminalView: TerminalView, @preconcurrency TerminalViewDelegate
 @Observable
 final class TerminalSession: Identifiable {
     typealias HostKeyApproval = @Sendable (_ fingerprint: String, _ expectedFingerprint: String?) async -> Bool
+    typealias EventHandler = (TerminalSessionEvent) -> Void
 
     let id: UUID
     var profile: SSHProfile
@@ -105,24 +107,29 @@ final class TerminalSession: Identifiable {
     @ObservationIgnored let terminalView: RetoTerminalView
     @ObservationIgnored private var engine: any SSHConnectionEngineProtocol = SSHConnectionEngine()
     @ObservationIgnored private let approveHostKey: HostKeyApproval
+    @ObservationIgnored private let eventHandler: EventHandler
     @ObservationIgnored private var connectionTask: Task<Void, Never>?
     @ObservationIgnored private var sendTask: Task<Void, Never>?
     @ObservationIgnored private var resizeTask: Task<Void, Never>?
     @ObservationIgnored private var pendingInput: [UInt8] = []
     @ObservationIgnored private var connectionAttemptID = UUID()
     @ObservationIgnored private var wantsConnection = true
+    @ObservationIgnored private var hasStartedConnection = false
+    @ObservationIgnored private var hasConnectedOnce = false
 
     init(
         id: UUID = UUID(),
         profile: SSHProfile,
         tmuxAttach: TmuxAttachIntent? = nil,
         preferences: TerminalPreferences = TerminalPreferences(),
-        approveHostKey: @escaping HostKeyApproval
+        approveHostKey: @escaping HostKeyApproval,
+        eventHandler: @escaping EventHandler = { _ in }
     ) {
         self.id = id
         self.profile = profile
         self.tmuxAttach = tmuxAttach
         self.approveHostKey = approveHostKey
+        self.eventHandler = eventHandler
         terminalView = RetoTerminalView(frame: .zero)
         terminalView.apply(preferences)
 
@@ -172,6 +179,8 @@ final class TerminalSession: Identifiable {
     }
 
     func connect() {
+        let initialAttempt = !hasStartedConnection
+        hasStartedConnection = true
         wantsConnection = true
         connectionTask?.cancel()
         let attemptID = UUID()
@@ -179,6 +188,7 @@ final class TerminalSession: Identifiable {
         let previousEngine = engine
         engine = Self.makeConnectionEngine(for: profile)
         state = .connecting
+        eventHandler(.connecting(profileName: profile.displayName, initial: initialAttempt))
         terminalView.feed(text: "\r\n[reto] Connecting to \(profile.endpoint)…\r\n")
 
         let engine = engine
@@ -200,8 +210,12 @@ final class TerminalSession: Identifiable {
                     }
                 )
                 guard !Task.isCancelled, self?.connectionAttemptID == attemptID else { return }
+                let wasConnected = self?.state == .connected
                 self?.state = .disconnected
                 self?.terminalView.feed(text: "\r\n[reto] SSH session closed.\r\n")
+                if wasConnected {
+                    self?.eventHandler(.closed(profileName: profile.displayName))
+                }
             } catch is CancellationError {
                 guard self?.connectionAttemptID == attemptID else { return }
                 self?.state = .disconnected
@@ -210,6 +224,7 @@ final class TerminalSession: Identifiable {
                 let message = error.localizedDescription
                 self?.state = .failed(message)
                 self?.terminalView.feed(text: "\r\n[reto] Connection failed: \(message)\r\n")
+                self?.eventHandler(.failed(profileName: profile.displayName, message: message))
             }
         }
     }
@@ -309,7 +324,10 @@ final class TerminalSession: Identifiable {
     }
 
     private func markConnected() {
+        let initialConnection = !hasConnectedOnce
+        hasConnectedOnce = true
         state = .connected
+        eventHandler(.connected(profileName: profile.displayName, initial: initialConnection))
         let terminal = terminalView.getTerminal()
         let scale = terminalView.window?.windowScene?.screen.scale ?? terminalView.traitCollection.displayScale
         resize(
@@ -342,6 +360,8 @@ struct TerminalWorkspaceSummary: Identifiable, Equatable, Sendable {
 @Observable
 final class TerminalWorkspaceStore {
     static let launcherStorageKey = "reto-browser.terminal-launcher.v1"
+    static let portForwardsStorageKey = "reto-browser.ssh-port-forwards.v1"
+    static let notificationsStorageKey = "reto-browser.terminal-notifications.v1"
 
     /// How often the app re-reads `@modot_*` pane options while tmux tabs are
     /// connected and the app is foregrounded.
@@ -358,6 +378,9 @@ final class TerminalWorkspaceStore {
     var pendingHostTrust: HostTrustRequest?
     var storageErrorMessage: String?
     var tmuxDiscovery: [UUID: TmuxDiscoveryState] = [:]
+    var portForwards: [SSHLocalPortForward]
+    var portForwardStates: [UUID: SSHLocalPortForwardState] = [:]
+    var terminalNotificationsEnabled: Bool
 
     /// The active `BrowserWorkspace.id`, mirrored one-way from
     /// `WorkspaceBrowserStore` by the view layer (the same pattern used for
@@ -396,6 +419,11 @@ final class TerminalWorkspaceStore {
     /// Receives deduplicated agent events (the pet listens here). Optional:
     /// nothing depends on it being set.
     @ObservationIgnored var agentEventHandler: ((TerminalAgentNotification) -> Void)?
+    /// User-facing terminal events are bridged to the pet by `BrowserView`.
+    @ObservationIgnored var terminalEventHandler: ((TerminalUserEvent) -> Void)?
+    /// Lets the forwarding sheet open localhost in the active Reto pane
+    /// without making this store depend on `WorkspaceBrowserStore`.
+    @ObservationIgnored var openForwardedURLHandler: ((URL) -> Void)?
     /// Injectable for tests so discovery never has to open a real connection.
     @ObservationIgnored var makeCommandRunner: (SSHProfile) -> any SSHOneShotCommandRunning = {
         SSHOneShotCommandRunnerFactory.makeRunner(for: $0)
@@ -407,6 +435,8 @@ final class TerminalWorkspaceStore {
     @ObservationIgnored private var trustContinuations: [UUID: CheckedContinuation<Bool, Never>] = [:]
     @ObservationIgnored private var eventDeduplicators: [UUID: TmuxAgentEventDeduplicator] = [:]
     @ObservationIgnored private var agentPollTask: Task<Void, Never>?
+    @ObservationIgnored private var activePortForwardServices: [UUID: SSHLocalPortForwardService] = [:]
+    @ObservationIgnored private var portForwardTrustSessionIDs: [UUID: UUID] = [:]
 
     init(
         vault: SSHProfileVault = KeychainSSHProfileVault(),
@@ -419,7 +449,14 @@ final class TerminalWorkspaceStore {
         pendingHostTrust = nil
         storageErrorMessage = nil
         launcherEnabled = defaults.bool(forKey: Self.launcherStorageKey)
+        terminalNotificationsEnabled = defaults.bool(forKey: Self.notificationsStorageKey)
         terminalPreferences = TerminalPreferences.load(from: defaults)
+        if let data = defaults.data(forKey: Self.portForwardsStorageKey),
+           let saved = try? JSONDecoder().decode([SSHLocalPortForward].self, from: data) {
+            portForwards = saved
+        } else {
+            portForwards = []
+        }
 
         do {
             profiles = try vault.loadProfiles()
@@ -431,6 +468,8 @@ final class TerminalWorkspaceStore {
 
     deinit {
         agentPollTask?.cancel()
+        let services = Array(activePortForwardServices.values)
+        Task { for service in services { await service.stop() } }
     }
 
     var selectedTab: TerminalSession? {
@@ -520,6 +559,8 @@ final class TerminalWorkspaceStore {
                 fingerprint: fingerprint,
                 expectedFingerprint: expected
             )
+        } eventHandler: { [weak self] event in
+            self?.handleSessionEvent(event, tabID: sessionID)
         }
         tabs.append(session)
         selectedTabID = session.id
@@ -586,6 +627,8 @@ final class TerminalWorkspaceStore {
     }
 
     func deleteProfile(_ profileID: UUID) {
+        let forwardIDs = portForwards.filter { $0.profileID == profileID }.map(\.id)
+        for forwardID in forwardIDs { deletePortForward(forwardID) }
         let previous = profiles
         profiles.removeAll(where: { $0.id == profileID })
         if !persistProfiles() {
@@ -711,6 +754,7 @@ final class TerminalWorkspaceStore {
             trustContinuations[request.id] = continuation
             trustQueue.append(request)
             if pendingHostTrust == nil {
+                RetoHaptics.attention()
                 pendingHostTrust = request
             }
         }
@@ -725,14 +769,245 @@ final class TerminalWorkspaceStore {
                 tab.suspendForBackground()
                 cancelHostTrustRequests(for: tab.id)
             }
+            pausePortForwards()
         case .active:
             tabs.forEach { $0.resumeAfterBackground() }
             startAgentEventMonitorIfNeeded()
+            resumePortForwards()
         case .inactive:
             break
         @unknown default:
             break
         }
+    }
+
+    // MARK: - Local notifications and user events
+
+    func setTerminalNotificationsEnabled(_ enabled: Bool) async {
+        if enabled {
+            let granted = (try? await UNUserNotificationCenter.current().requestAuthorization(
+                options: [.alert, .sound]
+            )) ?? false
+            terminalNotificationsEnabled = granted
+        } else {
+            terminalNotificationsEnabled = false
+        }
+        defaults.set(terminalNotificationsEnabled, forKey: Self.notificationsStorageKey)
+    }
+
+    private func handleSessionEvent(_ event: TerminalSessionEvent, tabID: UUID) {
+        switch event {
+        case .connecting(_, let initial):
+            if initial { RetoHaptics.connectionStarted() }
+        case .connected(let profileName, let initial):
+            guard initial else { return }
+            RetoHaptics.success()
+            emitUserEvent(
+                TerminalUserEvent(
+                    kind: .connected,
+                    title: "SSH connected",
+                    message: "\(profileName) is connected.",
+                    sourceTerminalTabID: tabID
+                ),
+                sendLocalNotification: false
+            )
+        case .closed(let profileName):
+            RetoHaptics.attention()
+            emitUserEvent(
+                TerminalUserEvent(
+                    kind: .completed,
+                    title: "SSH session ended",
+                    message: "\(profileName) closed its terminal session.",
+                    sourceTerminalTabID: tabID
+                )
+            )
+        case .failed(let profileName, let message):
+            RetoHaptics.failure()
+            emitUserEvent(
+                TerminalUserEvent(
+                    kind: .failure,
+                    title: "SSH connection failed",
+                    message: "\(profileName): \(message)",
+                    sourceTerminalTabID: tabID
+                )
+            )
+        }
+    }
+
+    private func emitUserEvent(
+        _ event: TerminalUserEvent,
+        sendLocalNotification: Bool = true,
+        deliverToHandler: Bool = true
+    ) {
+        if deliverToHandler { terminalEventHandler?(event) }
+        guard sendLocalNotification, terminalNotificationsEnabled else { return }
+        let content = UNMutableNotificationContent()
+        content.title = event.title
+        content.body = String(event.message.prefix(220))
+        content.sound = .default
+        let request = UNNotificationRequest(
+            identifier: "reto-terminal-\(UUID().uuidString)",
+            content: content,
+            trigger: UNTimeIntervalNotificationTrigger(timeInterval: 0.5, repeats: false)
+        )
+        Task { try? await UNUserNotificationCenter.current().add(request) }
+    }
+
+    // MARK: - SSH local port forwards
+
+    func portForwardState(for id: UUID) -> SSHLocalPortForwardState {
+        portForwardStates[id] ?? .stopped
+    }
+
+    @discardableResult
+    func savePortForward(_ rawForward: SSHLocalPortForward) -> Bool {
+        let forward = rawForward.normalized
+        if let validationMessage = forward.validationMessage {
+            storageErrorMessage = validationMessage
+            return false
+        }
+        guard profiles.contains(where: { $0.id == forward.profileID }) else {
+            storageErrorMessage = "Choose an SSH profile."
+            return false
+        }
+        if portForwards.contains(where: { $0.id != forward.id && $0.localPort == forward.localPort }) {
+            storageErrorMessage = "Local port \(forward.localPort) is already registered."
+            return false
+        }
+        if let index = portForwards.firstIndex(where: { $0.id == forward.id }) {
+            let routeChanged = portForwards[index].profileID != forward.profileID
+                || portForwards[index].localPort != forward.localPort
+                || portForwards[index].remoteHost != forward.remoteHost
+                || portForwards[index].remotePort != forward.remotePort
+            portForwards[index] = forward
+            if routeChanged, activePortForwardServices[forward.id] != nil {
+                pausePortForwardRuntime(forward.id, nextState: .stopped)
+            }
+        } else {
+            portForwards.append(forward)
+        }
+        portForwards.sort { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
+        persistPortForwards()
+        if forward.isEnabled { startPortForwardRuntime(forward.id) }
+        return true
+    }
+
+    func setPortForwardEnabled(_ id: UUID, enabled: Bool) {
+        guard let index = portForwards.firstIndex(where: { $0.id == id }) else { return }
+        portForwards[index].isEnabled = enabled
+        persistPortForwards()
+        if enabled {
+            startPortForwardRuntime(id)
+        } else {
+            pausePortForwardRuntime(id, nextState: .stopped)
+        }
+    }
+
+    func deletePortForward(_ id: UUID) {
+        pausePortForwardRuntime(id, nextState: .stopped)
+        portForwards.removeAll(where: { $0.id == id })
+        portForwardStates.removeValue(forKey: id)
+        persistPortForwards()
+    }
+
+    func openPortForward(_ id: UUID) {
+        guard case .active = portForwardState(for: id),
+              let url = portForwards.first(where: { $0.id == id })?.localURL else { return }
+        openForwardedURLHandler?(url)
+    }
+
+    func resumePortForwards() {
+        for forward in portForwards where forward.isEnabled {
+            startPortForwardRuntime(forward.id)
+        }
+    }
+
+    private func startPortForwardRuntime(_ id: UUID) {
+        guard activePortForwardServices[id] == nil,
+              let forward = portForwards.first(where: { $0.id == id }),
+              forward.isEnabled,
+              let profile = profiles.first(where: { $0.id == forward.profileID }) else { return }
+
+        let service = SSHLocalPortForwardService()
+        let trustSessionID = UUID()
+        activePortForwardServices[id] = service
+        portForwardTrustSessionIDs[id] = trustSessionID
+        portForwardStates[id] = .starting
+        RetoHaptics.connectionStarted()
+
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await service.start(
+                    forward: forward,
+                    profile: profile
+                ) { [weak self] fingerprint, expected in
+                    guard let self else { return false }
+                    return await self.requestHostTrust(
+                        sessionID: trustSessionID,
+                        profile: profile,
+                        fingerprint: fingerprint,
+                        expectedFingerprint: expected
+                    )
+                }
+                guard self.activePortForwardServices[id] === service else {
+                    await service.stop()
+                    return
+                }
+                self.portForwardStates[id] = .active
+                RetoHaptics.success()
+                self.emitUserEvent(
+                    TerminalUserEvent(
+                        kind: .connected,
+                        title: "Port forward active",
+                        message: "\(forward.displayName) is available at localhost:\(forward.localPort).",
+                        sourceTerminalTabID: nil
+                    ),
+                    sendLocalNotification: false
+                )
+            } catch {
+                guard self.activePortForwardServices[id] === service else { return }
+                self.activePortForwardServices.removeValue(forKey: id)
+                self.portForwardTrustSessionIDs.removeValue(forKey: id)
+                self.portForwardStates[id] = .failed(error.localizedDescription)
+                if let index = self.portForwards.firstIndex(where: { $0.id == id }) {
+                    self.portForwards[index].isEnabled = false
+                    self.persistPortForwards()
+                }
+                RetoHaptics.failure()
+                self.emitUserEvent(
+                    TerminalUserEvent(
+                        kind: .failure,
+                        title: "Port forward failed",
+                        message: "\(forward.displayName): \(error.localizedDescription)",
+                        sourceTerminalTabID: nil
+                    )
+                )
+            }
+        }
+    }
+
+    private func pausePortForwards() {
+        for id in Array(activePortForwardServices.keys) {
+            pausePortForwardRuntime(id, nextState: .paused)
+        }
+    }
+
+    private func pausePortForwardRuntime(_ id: UUID, nextState: SSHLocalPortForwardState) {
+        guard let service = activePortForwardServices.removeValue(forKey: id) else {
+            portForwardStates[id] = nextState
+            return
+        }
+        if let trustSessionID = portForwardTrustSessionIDs.removeValue(forKey: id) {
+            cancelHostTrustRequests(for: trustSessionID)
+        }
+        portForwardStates[id] = nextState
+        Task { await service.stop() }
+    }
+
+    private func persistPortForwards() {
+        guard let data = try? JSONEncoder().encode(portForwards) else { return }
+        defaults.set(data, forKey: Self.portForwardsStorageKey)
     }
 
     // MARK: - tmux discovery
@@ -802,7 +1077,7 @@ final class TerminalWorkspaceStore {
         let events = deduplicator.events(from: panes)
         eventDeduplicators[profile.id] = deduplicator
 
-        guard let handler = agentEventHandler else { return }
+        let handler = agentEventHandler
         for event in events {
             let tabID = tabs.first(where: {
                 $0.tmuxIdentity?.represents(
@@ -811,14 +1086,30 @@ final class TerminalWorkspaceStore {
                     sessionName: event.sessionName
                 ) == true
             })?.id
-            handler(
-                TerminalAgentNotification(
-                    event: event,
-                    profileID: profile.id,
-                    profileName: profile.displayName,
-                    tabID: tabID
-                )
+            let notification = TerminalAgentNotification(
+                event: event,
+                profileID: profile.id,
+                profileName: profile.displayName,
+                tabID: tabID
             )
+            handler?(notification)
+            if let kind = notification.userEventKind {
+                switch kind {
+                case .approval: RetoHaptics.attention()
+                case .failure: RetoHaptics.failure()
+                case .completed: RetoHaptics.success()
+                case .connected: break
+                }
+                emitUserEvent(
+                    TerminalUserEvent(
+                        kind: kind,
+                        title: kind == .approval ? "Agent needs approval" : "Agent update",
+                        message: notification.petMessageText,
+                        sourceTerminalTabID: tabID
+                    ),
+                    deliverToHandler: false
+                )
+            }
         }
     }
 

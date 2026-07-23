@@ -198,6 +198,7 @@ struct IslandChrome: View {
 
     private func islandActivationZone(width: CGFloat, height: CGFloat) -> some View {
         Button {
+            RetoHaptics.islandTransition(expanded: true)
             store.islandExpanded = true
         } label: {
             Color.clear
@@ -304,6 +305,7 @@ struct IslandChrome: View {
                 }
                 IslandIconButton(systemName: "line.3.horizontal", accessibilityLabel: "Sidebar") {
                     store.sidebarVisible = true
+                    RetoHaptics.islandTransition(expanded: false)
                     store.islandExpanded = false
                 }
                 islandMenu
@@ -337,6 +339,7 @@ struct IslandChrome: View {
             // address field's own long-press-drag handle for the same
             // touches. Tap-to-collapse — on a pill, the surface
             // background, or the canvas below — covers dismissal instead.)
+            RetoHaptics.islandTransition(expanded: false)
             store.islandExpanded = false
         }
         .accessibilityIdentifier("browser.island.surface")

@@ -2,6 +2,7 @@
 import Crypto
 import CryptoKit
 import Foundation
+import Network
 import NIOCore
 @preconcurrency import NIOSSH
 
@@ -130,20 +131,7 @@ final class SSHConnectionEngine: SSHConnectionEngineProtocol, @unchecked Sendabl
         onReady: @escaping ReadyHandler
     ) async throws {
         let profile = profile.normalized
-        let hostKeyDelegate = PinnedHostKeyDelegate(
-            expectedFingerprint: profile.hostKeyFingerprint,
-            approval: approveHostKey
-        )
-        let authenticationMethod = SSHAuthenticationMethodBox(
-            value: try Self.authenticationMethod(for: profile)
-        )
-        var settings = SSHClientSettings(
-            host: profile.host,
-            port: profile.port,
-            authenticationMethod: { authenticationMethod.value },
-            hostKeyValidator: .custom(hostKeyDelegate)
-        )
-        settings.connectTimeout = .seconds(20)
+        let settings = try Self.clientSettings(for: profile, approveHostKey: approveHostKey)
 
         let connectedClient = try await SSHClient.connect(to: settings)
         if Task.isCancelled {
@@ -233,6 +221,28 @@ final class SSHConnectionEngine: SSHConnectionEngineProtocol, @unchecked Sendabl
         }
     }
 
+    fileprivate static func clientSettings(
+        for profile: SSHProfile,
+        approveHostKey: @escaping SSHHostKeyApproval
+    ) throws -> SSHClientSettings {
+        let profile = profile.normalized
+        let hostKeyDelegate = PinnedHostKeyDelegate(
+            expectedFingerprint: profile.hostKeyFingerprint,
+            approval: approveHostKey
+        )
+        let authenticationMethod = SSHAuthenticationMethodBox(
+            value: try authenticationMethod(for: profile)
+        )
+        var settings = SSHClientSettings(
+            host: profile.host,
+            port: profile.port,
+            authenticationMethod: { authenticationMethod.value },
+            hostKeyValidator: .custom(hostKeyDelegate)
+        )
+        settings.connectTimeout = .seconds(20)
+        return settings
+    }
+
     func send(_ bytes: [UInt8]) async throws {
         guard let writer = currentWriter() else { throw SSHConnectionEngineError.notConnected }
         try await writer.value.write(ByteBuffer(bytes: bytes))
@@ -286,6 +296,272 @@ final class SSHConnectionEngine: SSHConnectionEngineProtocol, @unchecked Sendabl
         writer = nil
         client = nil
         return currentClient
+    }
+}
+
+// MARK: - Local port forwarding
+
+enum SSHLocalPortForwardError: LocalizedError {
+    case invalidConfiguration(String)
+    case listenerFailed(String)
+    case tunnelClosed
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidConfiguration(let message): message
+        case .listenerFailed(let message): "Local listener failed: \(message)"
+        case .tunnelClosed: "The SSH tunnel closed."
+        }
+    }
+}
+
+/// Sends bytes received from a direct-tcpip SSH child channel back to the
+/// accepted loopback connection.
+private final class SSHForwardInboundHandler: ChannelInboundHandler, @unchecked Sendable {
+    typealias InboundIn = ByteBuffer
+
+    private let connection: NWConnection
+    private let onClosed: @Sendable () -> Void
+
+    init(connection: NWConnection, onClosed: @escaping @Sendable () -> Void) {
+        self.connection = connection
+        self.onClosed = onClosed
+    }
+
+    func channelRead(context: ChannelHandlerContext, data: NIOAny) {
+        let buffer = unwrapInboundIn(data)
+        let payload = Data(buffer.readableBytesView)
+        guard !payload.isEmpty else { return }
+        connection.send(content: payload, completion: .contentProcessed { error in
+            if error != nil { self.connection.cancel() }
+        })
+    }
+
+    func channelInactive(context: ChannelHandlerContext) {
+        connection.cancel()
+        onClosed()
+        context.fireChannelInactive()
+    }
+
+    func errorCaught(context: ChannelHandlerContext, error: Error) {
+        connection.cancel()
+        onClosed()
+        context.close(promise: nil)
+    }
+}
+
+private final class SSHForwardContinuationGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var resumed = false
+
+    func claim() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !resumed else { return false }
+        resumed = true
+        return true
+    }
+}
+
+/// Owns one accepted local TCP connection and its matching SSH direct-tcpip
+/// channel. Web pages normally open several such connections in parallel;
+/// all of them share the parent authenticated SSH client.
+private final class SSHForwardConnectionBridge: @unchecked Sendable {
+    let id = UUID()
+
+    private let connection: NWConnection
+    private let queue: DispatchQueue
+    private let onClosed: @Sendable (UUID) -> Void
+    private let lock = NSLock()
+    private var channel: Channel?
+    private var closed = false
+
+    init(
+        connection: NWConnection,
+        queue: DispatchQueue,
+        onClosed: @escaping @Sendable (UUID) -> Void
+    ) {
+        self.connection = connection
+        self.queue = queue
+        self.onClosed = onClosed
+    }
+
+    func start(client: SSHClient, forward: SSHLocalPortForward) async throws {
+        connection.start(queue: queue)
+        let originator = try SocketAddress(ipAddress: "127.0.0.1", port: forward.localPort)
+        let bridgeID = id
+        let channel = try await client.createDirectTCPIPChannel(
+            using: SSHChannelType.DirectTCPIP(
+                targetHost: forward.remoteHost,
+                targetPort: forward.remotePort,
+                originatorAddress: originator
+            )
+        ) { [connection, onClosed] channel in
+            channel.pipeline.addHandler(
+                SSHForwardInboundHandler(connection: connection) {
+                    onClosed(bridgeID)
+                }
+            )
+        }
+        lock.withLock { self.channel = channel }
+        receiveNext()
+    }
+
+    func cancel() {
+        lock.lock()
+        guard !closed else {
+            lock.unlock()
+            return
+        }
+        closed = true
+        let channel = channel
+        self.channel = nil
+        lock.unlock()
+        connection.cancel()
+        channel?.close(promise: nil)
+    }
+
+    private func receiveNext() {
+        connection.receive(minimumIncompleteLength: 1, maximumLength: 64 * 1_024) { [weak self] data, _, complete, error in
+            guard let self else { return }
+            if let data, !data.isEmpty {
+                self.lock.lock()
+                let channel = self.channel
+                let isClosed = self.closed
+                self.lock.unlock()
+                if let channel, !isClosed {
+                    var buffer = channel.allocator.buffer(capacity: data.count)
+                    buffer.writeBytes(data)
+                    channel.writeAndFlush(buffer, promise: nil)
+                }
+            }
+            if complete || error != nil {
+                self.cancel()
+                self.onClosed(self.id)
+            } else {
+                self.receiveNext()
+            }
+        }
+    }
+}
+
+/// A foreground-scoped SSH local forward. It binds only to loopback and
+/// multiplexes accepted web connections over one authenticated SSH client.
+final class SSHLocalPortForwardService: @unchecked Sendable {
+    private let queue = DispatchQueue(label: "dev.modot.RetoBrowser.ssh-forward")
+    private let lock = NSLock()
+    private var listener: NWListener?
+    private var client: SSHClient?
+    private var bridges: [UUID: SSHForwardConnectionBridge] = [:]
+
+    func start(
+        forward rawForward: SSHLocalPortForward,
+        profile rawProfile: SSHProfile,
+        approveHostKey: @escaping SSHHostKeyApproval
+    ) async throws {
+        let forward = rawForward.normalized
+        if let validationMessage = forward.validationMessage {
+            throw SSHLocalPortForwardError.invalidConfiguration(validationMessage)
+        }
+        try await startValidated(
+            forward: forward,
+            profile: rawProfile.normalized,
+            approveHostKey: approveHostKey
+        )
+    }
+
+    private func startValidated(
+        forward: SSHLocalPortForward,
+        profile: SSHProfile,
+        approveHostKey: @escaping SSHHostKeyApproval
+    ) async throws {
+        let settings = try SSHConnectionEngine.clientSettings(
+            for: profile,
+            approveHostKey: approveHostKey
+        )
+        let connectedClient = try await SSHClient.connect(to: settings)
+
+        let parameters = NWParameters.tcp
+        parameters.allowLocalEndpointReuse = true
+        parameters.requiredLocalEndpoint = .hostPort(
+            host: NWEndpoint.Host("127.0.0.1"),
+            port: NWEndpoint.Port(rawValue: UInt16(forward.localPort))!
+        )
+        let listener = try NWListener(
+            using: parameters,
+            on: NWEndpoint.Port(rawValue: UInt16(forward.localPort))!
+        )
+
+        lock.withLock {
+            client = connectedClient
+            self.listener = listener
+        }
+
+        listener.newConnectionHandler = { [weak self, weak connectedClient] connection in
+            guard let self, let connectedClient else {
+                connection.cancel()
+                return
+            }
+            let bridge = SSHForwardConnectionBridge(
+                connection: connection,
+                queue: self.queue
+            ) { [weak self] bridgeID in
+                self?.removeBridge(bridgeID)
+            }
+            self.lock.lock()
+            self.bridges[bridge.id] = bridge
+            self.lock.unlock()
+            Task {
+                do {
+                    try await bridge.start(client: connectedClient, forward: forward)
+                } catch {
+                    bridge.cancel()
+                    self.removeBridge(bridge.id)
+                }
+            }
+        }
+
+        do {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                let gate = SSHForwardContinuationGate()
+                listener.stateUpdateHandler = { state in
+                    switch state {
+                    case .ready:
+                        if gate.claim() { continuation.resume() }
+                    case .failed(let error):
+                        if gate.claim() {
+                            continuation.resume(throwing: SSHLocalPortForwardError.listenerFailed(error.localizedDescription))
+                        }
+                    default:
+                        break
+                    }
+                }
+                listener.start(queue: queue)
+            }
+        } catch {
+            await stop()
+            throw error
+        }
+    }
+
+    func stop() async {
+        let stoppedResources = lock.withLock { () -> (NWListener?, SSHClient?, [SSHForwardConnectionBridge]) in
+            let resources = (listener, client, Array(bridges.values))
+            listener = nil
+            client = nil
+            bridges.removeAll()
+            return resources
+        }
+
+        stoppedResources.0?.cancel()
+        stoppedResources.2.forEach { $0.cancel() }
+        if let client = stoppedResources.1 { try? await client.close() }
+    }
+
+    private func removeBridge(_ id: UUID) {
+        lock.lock()
+        bridges.removeValue(forKey: id)
+        lock.unlock()
     }
 }
 

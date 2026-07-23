@@ -305,7 +305,7 @@ struct InstalledCodexPet: Codable, Equatable, Identifiable, Sendable {
 
 /// What the sprite renderer needs to draw the active pet.
 struct ActivePetAtlas {
-    static let bundledKey = "bundled.banana"
+    static let bundledKey = "bundled.reto"
 
     let key: String
     let columns: Int
@@ -326,7 +326,7 @@ struct ActivePetAtlas {
 /// rawValues of whichever `PetAnimationState.eventStates` this pet's atlas
 /// has real frames for (e.g. `["jumping", "failed", "waiting", "review"]`).
 /// Every bundled atlas is physically sized to 9 rows for layout consistency,
-/// but a pet that never authored art for rows 4-8 (like the sample Banana)
+/// but a pet that never authored art for rows 4-8
 /// must not claim those rows — hence this is explicit metadata, not just a
 /// row-count check.
 private struct BundledPetMetadata: Codable {
@@ -484,10 +484,9 @@ final class BrowserPetStore {
         .sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
     }()
 
-    /// The default bundled pet used when nothing is selected — kept as
-    /// "banana" for compatibility with existing `selectedPetID == nil`
-    /// snapshots.
-    @ObservationIgnored private static let defaultBundledPetID = "banana"
+    /// Reto is the product's bundled default. Older Banana/Ink Wisp
+    /// selections migrate to this nil-means-default state during refresh.
+    @ObservationIgnored private static let defaultBundledPetID = "reto"
 
     static var defaultPetsDirectory: URL {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -516,7 +515,10 @@ final class BrowserPetStore {
             selectedPetID = nil
         }
 
+        let migratedLegacyBundledPet = selectedPetID == "banana" || selectedPetID == "ink-wisp"
+        if migratedLegacyBundledPet { selectedPetID = nil }
         refreshInstalledPets()
+        if migratedLegacyBundledPet { persist() }
 
         #if DEBUG
         if ProcessInfo.processInfo.arguments.contains("-show-sample-pet-actions") {
@@ -524,7 +526,7 @@ final class BrowserPetStore {
         }
         // Verification-only hook so a bundled pet other than the default can
         // be selected without a UI affordance — never used in release
-        // builds. Example: `-select-bundled-pet ink-wisp`.
+        // builds. Example: `-select-bundled-pet reto`.
         if let flagIndex = ProcessInfo.processInfo.arguments.firstIndex(of: "-select-bundled-pet"),
            ProcessInfo.processInfo.arguments.indices.contains(flagIndex + 1) {
             selectedPetID = ProcessInfo.processInfo.arguments[flagIndex + 1]
@@ -533,7 +535,7 @@ final class BrowserPetStore {
     }
 
     /// Pets bundled inside the app (as opposed to downloaded ones), sorted
-    /// for display. Currently ships `banana` and `ink-wisp`.
+    /// for display. Reto is always the product default.
     var bundledPets: [BundledPet] { Self.bundledPetCatalog }
 
     /// `selectedPetID` resolved against the same default the atlas lookup

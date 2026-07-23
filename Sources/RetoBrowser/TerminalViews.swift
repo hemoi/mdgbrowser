@@ -213,6 +213,9 @@ struct TerminalPanel: View {
             case .tmuxSessions:
                 TmuxSessionBrowserSheet(store: store)
                     .environment(theme)
+            case .portForwards:
+                SSHPortForwardsSheet(store: store)
+                    .environment(theme)
             case .settings:
                 TerminalSettingsSheet(store: store)
                     .environment(theme)
@@ -385,6 +388,10 @@ struct TerminalPanel: View {
 
                 Button("Browse tmux Sessions", systemImage: "rectangle.stack") {
                     store.presentedSheet = .tmuxSessions
+                }
+
+                Button("Port Forwards", systemImage: "point.3.connected.trianglepath.dotted") {
+                    store.presentedSheet = .portForwards
                 }
 
                 Button("Manage Profiles", systemImage: "gearshape") {
@@ -905,6 +912,268 @@ struct SSHProfileEditor: View {
     }
 }
 
+struct SSHPortForwardsSheet: View {
+    @Environment(BrowserTheme.self) private var theme
+    @Environment(\.dismiss) private var dismiss
+    @State private var editingForward: SSHLocalPortForward?
+
+    let store: TerminalWorkspaceStore
+    var presentedModally = true
+
+    @ViewBuilder
+    var body: some View {
+        if presentedModally {
+            NavigationStack { content }
+                .sheet(item: $editingForward) { forward in
+                    SSHPortForwardEditor(forward: forward, store: store)
+                        .environment(theme)
+                }
+        } else {
+            content
+                .sheet(item: $editingForward) { forward in
+                    SSHPortForwardEditor(forward: forward, store: store)
+                        .environment(theme)
+                }
+        }
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        Group {
+            if store.profiles.isEmpty {
+                ContentUnavailableView {
+                    Label("Add an SSH Profile First", systemImage: "server.rack")
+                } description: {
+                    Text("A port forward uses a saved SSH profile for authentication and host-key verification.")
+                } actions: {
+                    Button("Manage SSH Profiles") { store.presentedSheet = .profiles }
+                        .primaryActionStyle(theme)
+                }
+            } else if store.portForwards.isEmpty {
+                ContentUnavailableView {
+                    Label("No Port Forwards", systemImage: "point.3.connected.trianglepath.dotted")
+                } description: {
+                    Text("Expose a service running on the remote server as a loopback-only localhost address on this device.")
+                } actions: {
+                    Button("Add Port Forward") { addForward() }
+                        .primaryActionStyle(theme)
+                }
+            } else {
+                List {
+                    Section {
+                        ForEach(store.portForwards) { forward in
+                            portForwardRow(forward)
+                                .swipeActions(edge: .trailing) {
+                                    Button("Delete", systemImage: "trash", role: .destructive) {
+                                        store.deletePortForward(forward.id)
+                                    }
+                                    Button("Edit", systemImage: "pencil") {
+                                        editingForward = forward
+                                    }
+                                    .tint(theme.tailnet)
+                                }
+                        }
+                    } footer: {
+                        Text("Active forwards bind only to 127.0.0.1. They pause in the background and resume when Reto becomes active.")
+                    }
+                }
+                .scrollContentBackground(.hidden)
+                .background(theme.background)
+            }
+        }
+        .navigationTitle("Port Forwards")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            if presentedModally {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
+            ToolbarItem(placement: .primaryAction) {
+                Button("Add", systemImage: "plus") { addForward() }
+                    .disabled(store.profiles.isEmpty)
+            }
+        }
+    }
+
+    private func addForward() {
+        guard let profile = store.visibleProfiles.first ?? store.profiles.first else { return }
+        editingForward = SSHLocalPortForward(profileID: profile.id)
+    }
+
+    private func portForwardRow(_ forward: SSHLocalPortForward) -> some View {
+        let state = store.portForwardState(for: forward.id)
+        return VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 10) {
+                Group {
+                    if state == .starting {
+                        ProgressView().controlSize(.small)
+                    } else {
+                        Circle()
+                            .fill(statusColor(state))
+                            .frame(width: 9, height: 9)
+                    }
+                }
+                .frame(width: 18)
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(forward.displayName)
+                        .font(.body.weight(.semibold))
+                    Text(forward.routeLabel)
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(theme.mutedLabel)
+                        .lineLimit(1)
+                }
+
+                Spacer(minLength: 8)
+
+                Toggle(
+                    "Active",
+                    isOn: Binding(
+                        get: { forward.isEnabled },
+                        set: { store.setPortForwardEnabled(forward.id, enabled: $0) }
+                    )
+                )
+                .labelsHidden()
+            }
+
+            HStack(spacing: 8) {
+                Text(state.label)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(statusColor(state))
+
+                if case .failed(let message) = state {
+                    Text(message)
+                        .font(.caption)
+                        .foregroundStyle(theme.mutedLabel)
+                        .lineLimit(1)
+                }
+
+                Spacer()
+
+                if state == .active {
+                    Button("Copy URL", systemImage: "doc.on.doc") {
+                        UIPasteboard.general.string = forward.localURL?.absoluteString
+                    }
+                    .buttonStyle(.borderless)
+
+                    Button("Open", systemImage: "safari") {
+                        store.openPortForward(forward.id)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                }
+
+                Button("Edit", systemImage: "slider.horizontal.3") {
+                    editingForward = forward
+                }
+                .labelStyle(.iconOnly)
+                .frame(width: 44, height: 44)
+            }
+        }
+        .padding(.vertical, 5)
+        .accessibilityElement(children: .contain)
+    }
+
+    private func statusColor(_ state: SSHLocalPortForwardState) -> SwiftUI.Color {
+        switch state {
+        case .active: theme.tailnet
+        case .starting, .paused: .orange
+        case .failed: .red
+        case .stopped: theme.mutedLabel
+        }
+    }
+}
+
+struct SSHPortForwardEditor: View {
+    private enum FocusField: Hashable { case name, localPort, remoteHost, remotePort }
+
+    @Environment(BrowserTheme.self) private var theme
+    @Environment(\.dismiss) private var dismiss
+    @State private var forward: SSHLocalPortForward
+    @State private var localPortText: String
+    @State private var remotePortText: String
+    @FocusState private var focusedField: FocusField?
+
+    let store: TerminalWorkspaceStore
+
+    init(forward: SSHLocalPortForward, store: TerminalWorkspaceStore) {
+        _forward = State(initialValue: forward)
+        _localPortText = State(initialValue: String(forward.localPort))
+        _remotePortText = State(initialValue: String(forward.remotePort))
+        self.store = store
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Connection") {
+                    TextField("Name", text: $forward.name, prompt: Text("Development server"))
+                        .focused($focusedField, equals: .name)
+
+                    Picker("SSH Profile", selection: $forward.profileID) {
+                        ForEach(store.profiles) { profile in
+                            Text(profile.displayName).tag(profile.id)
+                        }
+                    }
+                }
+
+                Section {
+                    TextField("Local port", text: $localPortText)
+                        .keyboardType(.numberPad)
+                        .focused($focusedField, equals: .localPort)
+                        .onChange(of: localPortText) { forward.localPort = Int(localPortText) ?? 0 }
+
+                    LabeledContent("Local address", value: "127.0.0.1")
+                        .font(.system(.body, design: .monospaced))
+                } header: {
+                    Text("On This Device")
+                } footer: {
+                    Text("Loopback-only binding prevents other devices on the network from reaching the forwarded service.")
+                }
+
+                Section {
+                    TextField("Remote host", text: $forward.remoteHost, prompt: Text("127.0.0.1"))
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .keyboardType(.URL)
+                        .focused($focusedField, equals: .remoteHost)
+
+                    TextField("Remote port", text: $remotePortText)
+                        .keyboardType(.numberPad)
+                        .focused($focusedField, equals: .remotePort)
+                        .onChange(of: remotePortText) { forward.remotePort = Int(remotePortText) ?? 0 }
+                } header: {
+                    Text("On the Remote Server")
+                } footer: {
+                    Text("Use 127.0.0.1 for a service listening only on the SSH server itself. Port forwards support saved password and private-key profiles; keyboard-interactive-only servers still require terminal login.")
+                }
+
+                if let validationMessage = forward.validationMessage {
+                    Section {
+                        Label(validationMessage, systemImage: "exclamationmark.circle")
+                            .foregroundStyle(.red)
+                    }
+                }
+            }
+            .scrollDismissesKeyboard(.interactively)
+            .navigationTitle(forward.name.isEmpty ? "New Port Forward" : "Edit Port Forward")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save") {
+                        if store.savePortForward(forward) { dismiss() }
+                    }
+                    .disabled(forward.validationMessage != nil)
+                }
+            }
+        }
+    }
+}
+
 struct TerminalSettingsSheet: View {
     @Environment(BrowserTheme.self) private var browserTheme
     @Environment(\.dismiss) private var dismiss
@@ -959,7 +1228,7 @@ struct TerminalSettingsSheet: View {
                     Text("Each card is a four-key group. Reordering cards changes the terminal keyboard in the same sequence.")
                 }
 
-                Section("Connections") {
+                Section {
                     NavigationLink {
                         SSHProfilesSheet(store: store)
                             .environment(browserTheme)
@@ -967,7 +1236,28 @@ struct TerminalSettingsSheet: View {
                         Label("SSH Profiles", systemImage: "server.rack")
                     }
 
+                    NavigationLink {
+                        SSHPortForwardsSheet(store: store, presentedModally: false)
+                            .environment(browserTheme)
+                    } label: {
+                        Label("Port Forwards", systemImage: "point.3.connected.trianglepath.dotted")
+                    }
+
+                    Toggle(
+                        "Session & approval notifications",
+                        isOn: Binding(
+                            get: { store.terminalNotificationsEnabled },
+                            set: { enabled in
+                                Task { await store.setTerminalNotificationsEnabled(enabled) }
+                            }
+                        )
+                    )
+
                     LabeledContent("Remote colors", value: "ANSI / True Color")
+                } header: {
+                    Text("Connections")
+                } footer: {
+                    Text("Reto can alert for SSH endings and foreground agent approval events. iOS pauses SSH while Reto is in the background; always-on remote alerts require a separate push relay.")
                 }
 
                 Section {

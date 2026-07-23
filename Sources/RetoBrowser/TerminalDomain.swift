@@ -234,6 +234,7 @@ enum TerminalSheetDestination: Identifiable, Equatable {
     case profiles
     case profileEditor(SSHProfile)
     case tmuxSessions
+    case portForwards
     case settings
 
     var id: String {
@@ -244,10 +245,113 @@ enum TerminalSheetDestination: Identifiable, Equatable {
             "profile-editor-\(profile.id.uuidString)"
         case .tmuxSessions:
             "tmux-sessions"
+        case .portForwards:
+            "port-forwards"
         case .settings:
             "settings"
         }
     }
+}
+
+/// A local-only SSH tunnel. Reto listens on `127.0.0.1:localPort` and opens
+/// an SSH direct-tcpip channel to `remoteHost:remotePort` through `profileID`.
+/// The loopback-only bind is intentional: the forwarded service is available
+/// to this device without exposing a development server to the LAN.
+struct SSHLocalPortForward: Codable, Equatable, Identifiable, Sendable {
+    let id: UUID
+    var name: String
+    var profileID: UUID
+    var localPort: Int
+    var remoteHost: String
+    var remotePort: Int
+    /// Desired state. Active forwards pause when iOS backgrounds the app and
+    /// resume when it becomes active again.
+    var isEnabled: Bool
+
+    init(
+        id: UUID = UUID(),
+        name: String = "",
+        profileID: UUID,
+        localPort: Int = 3_000,
+        remoteHost: String = "127.0.0.1",
+        remotePort: Int = 3_000,
+        isEnabled: Bool = false
+    ) {
+        self.id = id
+        self.name = name
+        self.profileID = profileID
+        self.localPort = localPort
+        self.remoteHost = remoteHost
+        self.remotePort = remotePort
+        self.isEnabled = isEnabled
+    }
+
+    var displayName: String {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? "Port \(remotePort)" : trimmed
+    }
+
+    var normalized: SSHLocalPortForward {
+        var copy = self
+        copy.name = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        copy.remoteHost = remoteHost.trimmingCharacters(in: .whitespacesAndNewlines)
+        return copy
+    }
+
+    var localURL: URL? {
+        URL(string: "http://127.0.0.1:\(localPort)")
+    }
+
+    var routeLabel: String {
+        "localhost:\(localPort) → \(remoteHost):\(remotePort)"
+    }
+
+    var validationMessage: String? {
+        let forward = normalized
+        if forward.remoteHost.isEmpty { return "Remote host is required." }
+        if !(1...65_535).contains(forward.localPort) { return "Local port must be between 1 and 65535." }
+        if !(1...65_535).contains(forward.remotePort) { return "Remote port must be between 1 and 65535." }
+        return nil
+    }
+}
+
+enum SSHLocalPortForwardState: Equatable, Sendable {
+    case stopped
+    case starting
+    case active
+    case paused
+    case failed(String)
+
+    var label: String {
+        switch self {
+        case .stopped: "Off"
+        case .starting: "Starting…"
+        case .active: "Active"
+        case .paused: "Paused"
+        case .failed: "Failed"
+        }
+    }
+}
+
+enum TerminalSessionEvent: Equatable, Sendable {
+    case connecting(profileName: String, initial: Bool)
+    case connected(profileName: String, initial: Bool)
+    case closed(profileName: String)
+    case failed(profileName: String, message: String)
+}
+
+struct TerminalUserEvent: Equatable, Sendable {
+    enum Kind: Equatable, Sendable {
+        case connected
+        case completed
+        case approval
+        case failure
+    }
+
+    let kind: Kind
+    let title: String
+    let message: String
+    let sourceTerminalTabID: UUID?
 }
 
 struct HostTrustRequest: Identifiable, Equatable, Sendable {

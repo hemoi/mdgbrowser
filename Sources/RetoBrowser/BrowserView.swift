@@ -206,7 +206,18 @@ struct BrowserView: View {
                         sourceTerminalTabID: notification.tabID
                     )
                 }
+                terminalStore.terminalEventHandler = { event in
+                    petStore.showMessage(
+                        event.message,
+                        sourceTerminalTabID: event.sourceTerminalTabID
+                    )
+                }
             }
+            terminalStore.openForwardedURLHandler = { url in
+                store.open(url)
+                terminalStore.closeSurface()
+            }
+            terminalStore.resumePortForwards()
             handlePendingIntent()
             await store.prepareWebFeatures()
             await aiStore.prepareWebFeatures()
