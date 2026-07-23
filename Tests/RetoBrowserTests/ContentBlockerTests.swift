@@ -237,24 +237,15 @@ final class ContentBlockerTests: XCTestCase {
         XCTAssertNil(blocker.errorMessage)
     }
 
-    // MARK: - Real-page before/after (the actual deliverable: does it block ads)
+    // MARK: - WebKit request blocking
 
-    /// Loads a real, ad-heavy page twice — once through a `WKWebView`
-    /// carrying the real compiled `BrowserContentBlocker.ruleList`, once
-    /// through a plain `WKWebView` with no rule list — and compares actual
-    /// network-level ad/tracker resource loads via the Resource Timing API
-    /// (a blocked request never gets an entry there, since it never left
-    /// the process).
-    ///
-    /// This test deliberately never skips. It used to `throw XCTSkip(...)`
-    /// whenever the content blocker failed to compile, which is exactly how
-    /// a real compile regression (WKErrorDomain code 6/7 — WebKit rejecting
-    /// the bundled rule JSON) went unnoticed: the "proof it blocks ads"
-    /// test quietly reported nothing instead of red. Every failure mode
-    /// below — compile failure, page load failure, no ad-host requests to
-    /// compare — now fails loudly via `XCTFail`/a thrown error instead.
+    /// Exercises the compiled, bundled filter in a real `WKWebView` without
+    /// relying on the markup, ad inventory, or process lifetime of a large
+    /// third-party page. The fixture requests a known tracker URL from a
+    /// same-origin document; the unblocked view records that request in the
+    /// Resource Timing API and the filtered view must not.
     @MainActor
-    func testRealAdHeavyPageIsBlockedComparedToUnblocked() async throws {
+    func testBundledRuleListBlocksKnownTrackerRequest() async throws {
         let blocker = BrowserContentBlocker()
         await blocker.prepare()
         guard let ruleList = blocker.ruleList else {
@@ -262,75 +253,61 @@ final class ContentBlockerTests: XCTestCase {
             return
         }
 
-        let adHosts = [
-            "doubleclick.net", "googlesyndication.com", "google-analytics.com", "googletagmanager.com",
-            "adnxs.com", "taboola.com", "outbrain.com", "amazon-adsystem.com", "adsrvr.org", "criteo.com",
-            "scorecardresearch.com", "moatads.com", "pubmatic.com", "rubiconproject.com", "casalemedia.com",
-        ]
-        guard let pageURL = URL(string: "https://www.cnn.com/") else {
-            XCTFail("bad test URL")
-            return
-        }
+        let trackerURL = "https://www.google-analytics.com/collect?v=1&tid=UA-000000-2&cid=555"
+        let fixtureBaseURL = try XCTUnwrap(URL(string: "https://reto-browser.test/"))
+        let fixtureHTML = """
+        <!doctype html>
+        <html><body>
+        <img src="\(trackerURL)" alt="">
+        </body></html>
+        """
 
-        func loadAndCountAdRequests(blocked: Bool) async throws -> Int {
+        func loadAndDetectTracker(blocked: Bool) async throws -> Bool {
             let configuration = WKWebViewConfiguration()
+            configuration.websiteDataStore = .nonPersistent()
             if blocked {
                 configuration.userContentController.add(ruleList)
             }
+
             let webView = WKWebView(frame: CGRect(x: 0, y: 0, width: 1200, height: 900), configuration: configuration)
             let delegate = LoadWaiter()
             webView.navigationDelegate = delegate
+            defer {
+                webView.stopLoading()
+                webView.navigationDelegate = nil
+            }
 
-            webView.load(URLRequest(url: pageURL))
-
+            webView.loadHTMLString(fixtureHTML, baseURL: fixtureBaseURL)
             let loaded = await delegate.waitForFinish(timeout: 20)
             guard loaded else {
-                throw AdHeavyPageTestFailure(
-                    description: "page did not finish loading in time (likely no network in this environment)"
+                throw ContentBlockerWebKitTestFailure(
+                    description: "local tracker fixture did not finish loading"
                 )
             }
 
-            let script = """
-            (function() {
-              const names = performance.getEntriesByType('resource').map(e => e.name);
-              const hosts = \(adHostsJSArray(adHosts));
-              return names.filter(n => hosts.some(h => n.includes(h))).length;
-            })();
-            """
-            let result = try await webView.evaluateJavaScript(script)
-            return (result as? Int) ?? (result as? NSNumber)?.intValue ?? 0
-        }
-
-        let unblockedAdRequests = try await loadAndCountAdRequests(blocked: false)
-        let blockedAdRequests = try await loadAndCountAdRequests(blocked: true)
-
-        // This is the actual deliverable comparison: with the real bundled
-        // EasyList/EasyPrivacy-derived rule list attached, known ad/tracker
-        // hosts should load far fewer (ideally zero) resources than with no
-        // blocking at all.
-        if unblockedAdRequests == 0 {
-            throw AdHeavyPageTestFailure(
-                description: "test page loaded no ad-host resources unblocked either (page may have changed or an upstream network path is filtering already); cannot compare"
+            let result = try await webView.callAsyncJavaScript(
+                """
+                return await new Promise(resolve => {
+                  setTimeout(() => {
+                    const names = performance.getEntriesByType('resource').map(e => e.name);
+                    resolve(names.some(name => name.includes('google-analytics.com')));
+                  }, 1500);
+                });
+                """,
+                arguments: [:],
+                in: nil,
+                in: .page
             )
+            return (result as? Bool) ?? (result as? NSNumber)?.boolValue ?? false
         }
-        XCTAssertLessThan(
-            blockedAdRequests,
-            unblockedAdRequests,
-            "blocked run (\(blockedAdRequests) ad-host resource loads) should be well below the unblocked run (\(unblockedAdRequests))"
-        )
+
+        XCTAssertTrue(try await loadAndDetectTracker(blocked: false), "the unblocked fixture must record its tracker request")
+        XCTAssertFalse(try await loadAndDetectTracker(blocked: true), "the bundled rule list must block its tracker request")
     }
 }
 
-/// Thrown by `testRealAdHeavyPageIsBlockedComparedToUnblocked` instead of
-/// `XCTSkip` so environment-shaped failures (no network, page changed
-/// shape) still fail the test loudly rather than disappearing as a silent
-/// skip in CI output.
-private struct AdHeavyPageTestFailure: Error, CustomStringConvertible {
+private struct ContentBlockerWebKitTestFailure: Error, CustomStringConvertible {
     let description: String
-}
-
-private func adHostsJSArray(_ hosts: [String]) -> String {
-    "[" + hosts.map { "\"\($0)\"" }.joined(separator: ",") + "]"
 }
 
 @MainActor
