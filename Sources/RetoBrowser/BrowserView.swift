@@ -12,6 +12,7 @@ struct BrowserView: View {
     @State private var petStore = BrowserPetStore()
     @State private var aiStore = BrowserAIStore()
     @State private var intentRouter = BrowserIntentRouter.shared
+    @State private var phoneTerminalDetent: PresentationDetent = .fraction(0.62)
 
     var body: some View {
         @Bindable var store = store
@@ -123,6 +124,17 @@ struct BrowserView: View {
                 .zIndex(4)
             }
 
+            if !isPad, terminalStore.phoneSheetMinimized {
+                VStack(spacing: 0) {
+                    Spacer(minLength: 0)
+                    MinimizedTerminalHandle(store: terminalStore)
+                        .padding(.bottom, 2)
+                }
+                .ignoresSafeArea(edges: .bottom)
+                .transition(reduceMotion ? .opacity : .move(edge: .bottom).combined(with: .opacity))
+                .zIndex(7)
+            }
+
             if store.commandPalettePresented {
                 BrowserCommandPalette(store: store, terminalStore: terminalStore)
                     .zIndex(8)
@@ -162,9 +174,11 @@ struct BrowserView: View {
                 .presentationDragIndicator(.visible)
         }
         .sheet(item: phoneTerminalSurface) { _ in
-            TerminalPanel(store: terminalStore)
+            TerminalPanel(store: terminalStore) {
+                terminalStore.minimizeSurface()
+            }
                 .environment(theme)
-                .presentationDetents(phoneTerminalDetents)
+                .presentationDetents(phoneTerminalDetents, selection: phoneTerminalDetentSelection)
                 .presentationDragIndicator(.visible)
                 .presentationContentInteraction(.resizes)
                 .presentationBackground(theme.background)
@@ -227,8 +241,17 @@ struct BrowserView: View {
 
     private var phoneTerminalSurface: Binding<TerminalSurface?> {
         Binding(
-            get: { isPad ? nil : terminalStore.presentedSurface },
-            set: { terminalStore.presentedSurface = $0 }
+            get: {
+                guard !isPad, !terminalStore.phoneSheetMinimized else { return nil }
+                return terminalStore.presentedSurface
+            },
+            set: { surface in
+                if let surface {
+                    terminalStore.presentedSurface = surface
+                } else if !terminalStore.phoneSheetMinimized {
+                    terminalStore.closeSurface()
+                }
+            }
         )
     }
 
@@ -238,6 +261,18 @@ struct BrowserView: View {
 
     private var phoneTerminalDetents: Set<PresentationDetent> {
         verticalSizeClass == .compact ? [.large] : [.fraction(0.62), .large]
+    }
+
+    private var phoneTerminalDetentSelection: Binding<PresentationDetent> {
+        Binding(
+            get: {
+                if verticalSizeClass == .compact { return .large }
+                return phoneTerminalDetent
+            },
+            set: { detent in
+                phoneTerminalDetent = detent
+            }
+        )
     }
 
     private func closeSidebar() {

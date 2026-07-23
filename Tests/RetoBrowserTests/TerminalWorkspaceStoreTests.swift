@@ -12,6 +12,32 @@ private final class InMemorySSHProfileVault: SSHProfileVault {
 
 @MainActor
 final class TerminalWorkspaceStoreTests: XCTestCase {
+    func testMinimizedSurfaceStaysPresentedAndToggleRestoresIt() {
+        let (store, _) = makeStore()
+        store.presentTerminal()
+
+        store.minimizeSurface()
+
+        XCTAssertEqual(store.presentedSurface, .terminal)
+        XCTAssertTrue(store.phoneSheetMinimized)
+
+        store.toggleSurface()
+
+        XCTAssertEqual(store.presentedSurface, .terminal)
+        XCTAssertFalse(store.phoneSheetMinimized)
+    }
+
+    func testCloseSurfaceClearsPresentationAndMinimizedState() {
+        let (store, _) = makeStore()
+        store.presentTerminal()
+        store.minimizeSurface()
+
+        store.closeSurface()
+
+        XCTAssertNil(store.presentedSurface)
+        XCTAssertFalse(store.phoneSheetMinimized)
+    }
+
     func testVisibleProfilesMatchesServiceBookmarkVisibilitySemantics() {
         let (store, _) = makeStore()
         let workspaceA = UUID()

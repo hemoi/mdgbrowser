@@ -27,6 +27,36 @@ struct TerminalLauncherButton: View {
     }
 }
 
+struct MinimizedTerminalHandle: View {
+    @Environment(BrowserTheme.self) private var theme
+
+    let store: TerminalWorkspaceStore
+
+    var body: some View {
+        Button {
+            store.presentTerminal()
+        } label: {
+            Capsule()
+                .fill(theme.mutedLabel.opacity(0.75))
+                .frame(width: 42, height: 5)
+                .frame(maxWidth: .infinity)
+                .frame(height: 44)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .gesture(
+            DragGesture(minimumDistance: 6)
+                .onEnded { value in
+                    guard value.translation.height < -8 else { return }
+                    store.presentTerminal()
+                }
+        )
+        .accessibilityLabel("Expand terminal")
+        .accessibilityHint("Double tap or drag up to restore the terminal sheet.")
+        .accessibilityIdentifier("terminal.minimized-handle")
+    }
+}
+
 struct FloatingTerminalWindow: View {
     @State private var restingOffset: CGSize = .zero
     @GestureState private var dragOffset: CGSize = .zero
@@ -148,6 +178,7 @@ struct TerminalPanel: View {
 
     let store: TerminalWorkspaceStore
     var dragGesture: AnyGesture<DragGesture.Value>?
+    var minimize: (() -> Void)?
 
     private var isPhoneSheet: Bool {
         dragGesture == nil && UIDevice.current.userInterfaceIdiom == .phone
@@ -252,14 +283,22 @@ struct TerminalPanel: View {
                 .accessibilityIdentifier("terminal.hide-keyboard")
             }
 
-            CompactIconButton(
-                systemName: isPhoneSheet ? "chevron.down" : "xmark",
-                accessibilityLabel: isPhoneSheet ? "Dismiss terminal" : "Close terminal"
-            ) {
-                store.selectedTab?.dismissKeyboard()
-                store.presentedSurface = nil
+            if isPhoneSheet {
+                CompactIconButton(
+                    systemName: "chevron.down",
+                    accessibilityLabel: "Minimize terminal"
+                ) {
+                    store.selectedTab?.dismissKeyboard()
+                    minimize?()
+                }
+                .accessibilityIdentifier("terminal.minimize")
             }
-            .accessibilityIdentifier("terminal.dismiss")
+
+            CompactIconButton(systemName: "xmark", accessibilityLabel: "Close terminal") {
+                store.selectedTab?.dismissKeyboard()
+                store.closeSurface()
+            }
+            .accessibilityIdentifier("terminal.close")
         }
         .padding(.horizontal, 8)
         .frame(height: 44)

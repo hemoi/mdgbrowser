@@ -325,6 +325,7 @@ final class TerminalWorkspaceStore {
     var selectedTabID: UUID?
     var launcherEnabled: Bool
     var presentedSurface: TerminalSurface?
+    private(set) var phoneSheetMinimized = false
     var presentedSheet: TerminalSheetDestination?
     var pendingHostTrust: HostTrustRequest?
     var storageErrorMessage: String?
@@ -412,31 +413,46 @@ final class TerminalWorkspaceStore {
         launcherEnabled.toggle()
         defaults.set(launcherEnabled, forKey: Self.launcherStorageKey)
         if !launcherEnabled {
-            presentedSurface = nil
+            closeSurface()
         }
     }
 
     func toggleSurface() {
-        presentedSurface = presentedSurface == nil ? .terminal : nil
+        if presentedSurface == nil || phoneSheetMinimized {
+            presentTerminal()
+        } else {
+            closeSurface()
+        }
     }
 
     func presentTerminal() {
         presentedSurface = .terminal
+        phoneSheetMinimized = false
+    }
+
+    func minimizeSurface() {
+        guard presentedSurface != nil else { return }
+        phoneSheetMinimized = true
+    }
+
+    func closeSurface() {
+        phoneSheetMinimized = false
+        presentedSurface = nil
     }
 
     func presentProfiles() {
-        presentedSurface = .terminal
+        presentTerminal()
         presentedSheet = .profiles
     }
 
     func presentProfileEditor(_ profile: SSHProfile = SSHProfile()) {
-        presentedSurface = .terminal
+        presentTerminal()
         presentedSheet = .profileEditor(profile)
     }
 
     func openTab(profileID: UUID) {
         guard let profile = profiles.first(where: { $0.id == profileID }) else { return }
-        presentedSurface = .terminal
+        presentTerminal()
         appendTab(profile: profile, tmuxAttach: nil)
     }
 
@@ -444,7 +460,7 @@ final class TerminalWorkspaceStore {
     /// already shows that session (fixed-profile or discovered), it is
     /// selected instead of opening a duplicate.
     func openDiscoveredTmuxSession(profileID: UUID, session: TmuxSessionSummary) {
-        presentedSurface = .terminal
+        presentTerminal()
         if let existing = tabs.first(where: {
             $0.tmuxIdentity?.represents(
                 profileID: profileID,
@@ -681,7 +697,7 @@ final class TerminalWorkspaceStore {
     // MARK: - tmux discovery
 
     func presentTmuxSessions() {
-        presentedSurface = .terminal
+        presentTerminal()
         presentedSheet = .tmuxSessions
     }
 
