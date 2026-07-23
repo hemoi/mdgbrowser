@@ -285,24 +285,18 @@ final class ContentBlockerTests: XCTestCase {
                 )
             }
 
-            let result = try await webView.callAsyncJavaScript(
-                """
-                return await new Promise(resolve => {
-                  setTimeout(() => {
-                    const names = performance.getEntriesByType('resource').map(e => e.name);
-                    resolve(names.some(name => name.includes('google-analytics.com')));
-                  }, 1500);
-                });
-                """,
-                arguments: [:],
-                in: nil,
-                in: .page
+            try await Task.sleep(nanoseconds: 1_500_000_000)
+            let result = try await webView.evaluateJavaScript(
+                "performance.getEntriesByType('resource').some(entry => entry.name.includes('google-analytics.com'))"
             )
             return (result as? Bool) ?? (result as? NSNumber)?.boolValue ?? false
         }
 
-        XCTAssertTrue(try await loadAndDetectTracker(blocked: false), "the unblocked fixture must record its tracker request")
-        XCTAssertFalse(try await loadAndDetectTracker(blocked: true), "the bundled rule list must block its tracker request")
+        let unblockedTrackerDetected = try await loadAndDetectTracker(blocked: false)
+        XCTAssertTrue(unblockedTrackerDetected, "the unblocked fixture must record its tracker request")
+
+        let blockedTrackerDetected = try await loadAndDetectTracker(blocked: true)
+        XCTAssertFalse(blockedTrackerDetected, "the bundled rule list must block its tracker request")
     }
 }
 
