@@ -3,12 +3,11 @@ import UIKit
 
 /// Compact-width (iPhone) chrome that reads as an extension of the Dynamic
 /// Island itself: time, Back, the hardware island, Reload, and battery share
-/// one compact rail. A long press morphs that rail downward into the full
+/// one compact rail. Tapping the center island zone morphs that rail into the
 /// browser surface. Apps can't draw inside the island or receive taps in the
 /// system-owned status bar, so this view replaces the system indicators with
 /// live in-app equivalents while the rail is active. Devices without a
-/// sensor housing (and iPad)
-/// fall back to the regular `CompactCommandBar`.
+/// sensor housing (and iPad) fall back to the regular `CompactCommandBar`.
 struct IslandChrome: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -61,8 +60,14 @@ struct IslandChrome: View {
         return VStack(spacing: 0) {
             if store.islandExpanded {
                 expandedSurface(clusterHeight: clusterHeight)
+                    .transition(
+                        reduceMotion
+                            ? .opacity
+                            : .scale(scale: 0.94, anchor: .top).combined(with: .opacity)
+                    )
             } else {
                 islandRail(clusterHeight: clusterHeight, embedded: false)
+                    .transition(.opacity)
             }
             Spacer(minLength: 0)
         }
@@ -71,8 +76,18 @@ struct IslandChrome: View {
         // The rail supplies live time and battery indicators in the same
         // positions, so the island can be one continuous, tappable line.
         .offset(y: -topInset)
-        .animation(reduceMotion ? .linear(duration: 0.12) : .snappy(duration: 0.26), value: store.islandExpanded)
-        .animation(reduceMotion ? .linear(duration: 0.12) : .snappy(duration: 0.22), value: showTabList)
+        .animation(
+            reduceMotion
+                ? .easeOut(duration: 0.12)
+                : .spring(response: 0.38, dampingFraction: 0.84, blendDuration: 0.1),
+            value: store.islandExpanded
+        )
+        .animation(
+            reduceMotion
+                ? .easeOut(duration: 0.12)
+                : .spring(response: 0.3, dampingFraction: 0.88, blendDuration: 0.08),
+            value: showTabList
+        )
     }
 
     // MARK: Island rail
@@ -92,29 +107,35 @@ struct IslandChrome: View {
 
             Spacer(minLength: 0)
 
-            pill(
-                systemName: "chevron.backward",
-                accessibilityLabel: "Back",
-                dimmed: !session.canGoBack,
-                height: pillHeight,
-                embedded: embedded,
-                action: { if session.canGoBack { session.goBack() } }
-            )
-            .accessibilityIdentifier("browser.island.pill.back")
+            HStack(spacing: 0) {
+                pill(
+                    systemName: "chevron.backward",
+                    accessibilityLabel: "Back",
+                    dimmed: !session.canGoBack,
+                    height: pillHeight,
+                    action: { if session.canGoBack { session.goBack() } }
+                )
+                .accessibilityIdentifier("browser.island.pill.back")
 
-            Color.clear.frame(width: islandReserve, height: 1)
-
-            pill(
-                systemName: session.isLoading ? "xmark" : "arrow.clockwise",
-                accessibilityLabel: session.isLoading ? "Stop loading" : "Reload page",
-                dimmed: false,
-                height: pillHeight,
-                embedded: embedded,
-                action: {
-                    if session.isLoading { session.stopLoading() } else { session.reload() }
+                if embedded {
+                    Color.clear.frame(width: islandReserve, height: 44)
+                } else {
+                    islandActivationZone(width: islandReserve, height: 44)
                 }
-            )
-            .accessibilityIdentifier("browser.island.pill.reload")
+
+                pill(
+                    systemName: session.isLoading ? "xmark" : "arrow.clockwise",
+                    accessibilityLabel: session.isLoading ? "Stop loading" : "Reload page",
+                    dimmed: false,
+                    height: pillHeight,
+                    action: {
+                        if session.isLoading { session.stopLoading() } else { session.reload() }
+                    }
+                )
+                .accessibilityIdentifier("browser.island.pill.reload")
+            }
+            .frame(height: 44)
+            .background(IslandColors.surface, in: Capsule())
 
             Spacer(minLength: 0)
 
@@ -151,45 +172,42 @@ struct IslandChrome: View {
         .accessibilityLabel(Text(verbatim: "Wi-Fi, battery \(batteryPercentage) percent"))
     }
 
-    /// A collapsed control performs its visible action on tap and expands
-    /// the browser surface on a deliberate long press. The visible capsule
-    /// is compact, while the outer frame preserves a 44pt touch target.
+    private func islandActivationZone(width: CGFloat, height: CGFloat) -> some View {
+        Button {
+            store.islandExpanded = true
+        } label: {
+            Color.clear
+                .frame(width: width, height: height)
+                .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Expand browser controls")
+        .accessibilityHint("Double tap the Dynamic Island area to show the address and browser menu.")
+        .accessibilityIdentifier("browser.island.expand")
+    }
+
+    /// A collapsed control performs only its visible action. Expansion is
+    /// owned exclusively by the center island activation zone, preventing a
+    /// navigation tap from being misclassified as a chrome gesture.
     private func pill(
         systemName: String,
         accessibilityLabel: String,
         dimmed: Bool,
         height: CGFloat,
-        embedded: Bool,
         action: @escaping () -> Void
     ) -> some View {
-        Image(systemName: systemName)
-            .font(.system(size: 13, weight: .semibold))
-            .foregroundStyle(IslandColors.onSurface.opacity(dimmed ? 0.35 : 1))
-            .frame(width: height * 1.18, height: height)
-            .background(embedded ? IslandColors.controlFill : IslandColors.surface, in: Capsule())
-            .frame(width: 44, height: 44)
-            .contentShape(Rectangle())
-            .gesture(
-                LongPressGesture(minimumDuration: 0.38)
-                    .exclusively(before: TapGesture())
-                    .onEnded { result in
-                        switch result {
-                        case .first:
-                            store.islandExpanded = true
-                        case .second:
-                            action()
-                        }
-                    }
-            )
-            .accessibilityAction {
-                action()
-            }
-            .accessibilityAction(named: "Expand browser controls") {
-                store.islandExpanded = true
-            }
-            .accessibilityLabel(accessibilityLabel)
-            .accessibilityAddTraits(.isButton)
-            .accessibilityHint("Double tap to activate. Touch and hold to expand browser controls.")
+        Button(action: action) {
+            Image(systemName: systemName)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(IslandColors.onSurface.opacity(dimmed ? 0.35 : 1))
+                .frame(width: height * 1.18, height: height)
+                .frame(width: 44, height: 44)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(dimmed)
+        .accessibilityLabel(accessibilityLabel)
+        .accessibilityHint("Double tap to activate.")
     }
 
     // MARK: Expanded surface
@@ -247,7 +265,14 @@ struct IslandChrome: View {
         }
         .padding(.horizontal, 8)
         .padding(.bottom, 10)
-        .background(IslandColors.surface, in: RoundedRectangle(cornerRadius: GlassMetrics.surfaceCornerRadius, style: .continuous))
+        .background(
+            IslandColors.expandedSurface,
+            in: RoundedRectangle(cornerRadius: GlassMetrics.surfaceCornerRadius, style: .continuous)
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: GlassMetrics.surfaceCornerRadius, style: .continuous)
+                .stroke(IslandColors.onSurface.opacity(0.07), lineWidth: GlassMetrics.hairline)
+        }
         .padding(.horizontal, 6)
         .contentShape(Rectangle())
         .onTapGesture {

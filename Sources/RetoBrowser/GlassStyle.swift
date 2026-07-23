@@ -26,6 +26,10 @@ enum IslandColors {
     /// Opaque near-black, matching the hardware island's own color in both
     /// appearances and over any page background.
     static let surface = Color(red: 0.055, green: 0.055, blue: 0.058)
+    /// Slightly raised black for the expanded shell. Keeping this one tonal
+    /// step above the hardware cutout makes its real top inset perceptible
+    /// without moving the inline controls away from the physical island.
+    static let expandedSurface = Color(red: 0.075, green: 0.075, blue: 0.082)
     /// Light label/icon color guaranteed to contrast `surface`, regardless
     /// of system color scheme.
     static let onSurface = Color(white: 0.97)
