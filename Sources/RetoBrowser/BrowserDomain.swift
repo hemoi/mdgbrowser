@@ -1,4 +1,5 @@
 import Foundation
+import WebKit
 
 enum BrowserPane: String, Codable, CaseIterable, Identifiable, Sendable {
     case primary
@@ -158,6 +159,7 @@ struct StoredTabRecord: Codable, Equatable, Identifiable, Sendable {
 struct BrowserWorkspace: Codable, Equatable, Identifiable, Sendable {
     let id: UUID
     var name: String
+    var isPrivate: Bool
     var tabs: [BrowserTabRecord]
     var primaryTabID: UUID
     var secondaryTabID: UUID?
@@ -175,6 +177,7 @@ struct BrowserWorkspace: Codable, Equatable, Identifiable, Sendable {
     init(
         id: UUID,
         name: String,
+        isPrivate: Bool = false,
         tabs: [BrowserTabRecord],
         primaryTabID: UUID,
         secondaryTabID: UUID?,
@@ -190,6 +193,7 @@ struct BrowserWorkspace: Codable, Equatable, Identifiable, Sendable {
     ) {
         self.id = id
         self.name = name
+        self.isPrivate = isPrivate
         self.tabs = tabs
         self.primaryTabID = primaryTabID
         self.secondaryTabID = secondaryTabID
@@ -230,11 +234,12 @@ struct BrowserWorkspace: Codable, Equatable, Identifiable, Sendable {
         return BrowserPane.slotOrder.filter { tabID(for: $0) != nil }
     }
 
-    static func fresh(name: String, now: Date = .now) -> BrowserWorkspace {
+    static func fresh(name: String, isPrivate: Bool = false, now: Date = .now) -> BrowserWorkspace {
         let tab = BrowserTabRecord.start(now: now)
         return BrowserWorkspace(
             id: UUID(),
             name: name,
+            isPrivate: isPrivate,
             tabs: [tab],
             primaryTabID: tab.id,
             secondaryTabID: nil,
@@ -244,7 +249,7 @@ struct BrowserWorkspace: Codable, Equatable, Identifiable, Sendable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, name, tabs, primaryTabID, secondaryTabID, tertiaryTabID, quaternaryTabID
+        case id, name, isPrivate, tabs, primaryTabID, secondaryTabID, tertiaryTabID, quaternaryTabID
         case splitEnabled, splitRatio, splitRowRatio, splitAxis
         case tabStacks, archivedTabs, recentlyClosedTabs
     }
@@ -253,6 +258,7 @@ struct BrowserWorkspace: Codable, Equatable, Identifiable, Sendable {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         id = try values.decode(UUID.self, forKey: .id)
         name = try values.decode(String.self, forKey: .name)
+        isPrivate = try values.decodeIfPresent(Bool.self, forKey: .isPrivate) ?? false
         tabs = try values.decode([BrowserTabRecord].self, forKey: .tabs)
         primaryTabID = try values.decode(UUID.self, forKey: .primaryTabID)
         secondaryTabID = try values.decodeIfPresent(UUID.self, forKey: .secondaryTabID)
@@ -351,8 +357,52 @@ struct SiteSettingsRecord: Codable, Equatable, Identifiable, Sendable {
     var autoplayEnabled = false
     var cameraPermission: BrowserPermission = .ask
     var microphonePermission: BrowserPermission = .ask
+    var motionPermission: BrowserPermission = .ask
 
     var id: String { "\(workspaceID.uuidString)|\(host.lowercased())" }
+
+    init(
+        workspaceID: UUID,
+        host: String,
+        contentMode: BrowserContentMode = .recommended,
+        pageZoom: Double = 1,
+        blockerEnabled: Bool = true,
+        javaScriptEnabled: Bool = true,
+        autoplayEnabled: Bool = false,
+        cameraPermission: BrowserPermission = .ask,
+        microphonePermission: BrowserPermission = .ask,
+        motionPermission: BrowserPermission = .ask
+    ) {
+        self.workspaceID = workspaceID
+        self.host = host
+        self.contentMode = contentMode
+        self.pageZoom = pageZoom
+        self.blockerEnabled = blockerEnabled
+        self.javaScriptEnabled = javaScriptEnabled
+        self.autoplayEnabled = autoplayEnabled
+        self.cameraPermission = cameraPermission
+        self.microphonePermission = microphonePermission
+        self.motionPermission = motionPermission
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case workspaceID, host, contentMode, pageZoom, blockerEnabled
+        case javaScriptEnabled, autoplayEnabled, cameraPermission, microphonePermission, motionPermission
+    }
+
+    init(from decoder: any Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        workspaceID = try values.decode(UUID.self, forKey: .workspaceID)
+        host = try values.decode(String.self, forKey: .host)
+        contentMode = try values.decodeIfPresent(BrowserContentMode.self, forKey: .contentMode) ?? .recommended
+        pageZoom = try values.decodeIfPresent(Double.self, forKey: .pageZoom) ?? 1
+        blockerEnabled = try values.decodeIfPresent(Bool.self, forKey: .blockerEnabled) ?? true
+        javaScriptEnabled = try values.decodeIfPresent(Bool.self, forKey: .javaScriptEnabled) ?? true
+        autoplayEnabled = try values.decodeIfPresent(Bool.self, forKey: .autoplayEnabled) ?? false
+        cameraPermission = try values.decodeIfPresent(BrowserPermission.self, forKey: .cameraPermission) ?? .ask
+        microphonePermission = try values.decodeIfPresent(BrowserPermission.self, forKey: .microphonePermission) ?? .ask
+        motionPermission = try values.decodeIfPresent(BrowserPermission.self, forKey: .motionPermission) ?? .ask
+    }
 }
 
 struct BrowserSnapshot: Codable, Equatable, Sendable {
@@ -409,6 +459,7 @@ enum BrowserSheetDestination: Identifiable, Equatable {
     case developerTools
     case tabArchive
     case downloads
+    case websiteData
 
     var id: String {
         switch self {
@@ -421,7 +472,59 @@ enum BrowserSheetDestination: Identifiable, Equatable {
         case .developerTools: "developer-tools"
         case .tabArchive: "tab-archive"
         case .downloads: "downloads"
+        case .websiteData: "website-data"
         }
+    }
+}
+
+struct BrowserWebsiteDataSummary: Identifiable, Equatable, Sendable {
+    var displayName: String
+    var dataTypes: Set<String>
+
+    var id: String { displayName.lowercased() }
+
+    var containsLoginData: Bool {
+        dataTypes.contains(WKWebsiteDataTypeCookies)
+            || dataTypes.contains(WKWebsiteDataTypeLocalStorage)
+            || dataTypes.contains(WKWebsiteDataTypeIndexedDBDatabases)
+    }
+
+    var containsCache: Bool {
+        dataTypes.contains(WKWebsiteDataTypeMemoryCache)
+            || dataTypes.contains(WKWebsiteDataTypeDiskCache)
+    }
+
+    var detailText: String {
+        var details: [String] = []
+        if containsLoginData { details.append("Cookies & storage") }
+        if containsCache { details.append("Cache") }
+        if details.isEmpty { details.append("Website data") }
+        return details.joined(separator: " · ")
+    }
+}
+
+struct BrowserSavedCredentialSummary: Identifiable, Equatable, Sendable {
+    let host: String
+    let port: Int
+    let protocolName: String
+    let realm: String?
+    let authenticationMethod: String
+    let username: String
+
+    var id: String {
+        [host.lowercased(), String(port), protocolName.lowercased(), realm ?? "", authenticationMethod, username]
+            .joined(separator: "|")
+    }
+
+    var displayHost: String {
+        let defaultPort = (protocolName.lowercased() == "https" && port == 443)
+            || (protocolName.lowercased() == "http" && port == 80)
+        return defaultPort ? host : "\(host):\(port)"
+    }
+
+    var detailText: String {
+        if let realm, !realm.isEmpty { return "\(username) · \(realm)" }
+        return username
     }
 }
 

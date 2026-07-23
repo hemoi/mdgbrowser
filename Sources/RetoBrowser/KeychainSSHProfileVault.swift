@@ -55,7 +55,10 @@ final class KeychainSSHProfileVault: SSHProfileVault {
 
     func saveProfiles(_ profiles: [SSHProfile]) throws {
         let data = try JSONEncoder().encode(profiles)
-        let attributes: [String: Any] = [kSecValueData as String: data]
+        let attributes: [String: Any] = [
+            kSecValueData as String: data,
+            kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly,
+        ]
         let updateStatus = SecItemUpdate(baseQuery as CFDictionary, attributes as CFDictionary)
 
         if updateStatus == errSecSuccess { return }
@@ -74,7 +77,9 @@ final class KeychainSSHProfileVault: SSHProfileVault {
         [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
-            kSecAttrAccount as String: account
+            kSecAttrAccount as String: account,
+            kSecAttrSynchronizable as String: false,
+            kSecUseDataProtectionKeychain as String: true,
         ]
     }
 }

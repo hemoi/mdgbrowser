@@ -24,6 +24,8 @@ struct BrowserManagementSheet: View {
             TabArchiveSheet(store: store)
         case .downloads:
             DownloadsSheet(store: store)
+        case .websiteData:
+            WebsiteDataSheet(store: store)
         }
     }
 }
@@ -31,6 +33,7 @@ struct BrowserManagementSheet: View {
 private struct AddWorkspaceSheet: View {
     @Environment(\.dismiss) private var dismiss
     @State private var name = ""
+    @State private var isPrivate = false
 
     let store: WorkspaceBrowserStore
 
@@ -39,8 +42,14 @@ private struct AddWorkspaceSheet: View {
             Section {
                 TextField("Work, Personal, Ops…", text: $name)
             }
+
+            Section {
+                Toggle("Private workspace", isOn: $isPrivate)
+            } footer: {
+                Text("Private tabs use an in-memory WebKit data store. History, cookies, cache, and site settings disappear when the workspace closes or the app exits.")
+            }
         } onConfirm: {
-            store.addWorkspace(name: trimmedName)
+            store.addWorkspace(name: trimmedName, isPrivate: isPrivate)
             dismiss()
         }
     }

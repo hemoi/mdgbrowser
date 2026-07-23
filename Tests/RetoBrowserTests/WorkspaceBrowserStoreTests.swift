@@ -1,4 +1,5 @@
 import XCTest
+import WebKit
 @testable import RetoBrowser
 
 @MainActor
@@ -94,6 +95,161 @@ final class WorkspaceBrowserStoreTests: XCTestCase {
         let secondSession = store.session(for: .primary)
         XCTAssertEqual(secondSession.webView.configuration.websiteDataStore.identifier, store.activeWorkspaceID)
         XCTAssertNotEqual(session.workspaceID, secondSession.workspaceID)
+    }
+
+    func testPrivateWorkspaceUsesMemoryOnlyDataStoreAndIsNotRestored() {
+        let (store, defaults) = makeStore()
+
+        store.addWorkspace(name: "Private", isPrivate: true)
+
+        XCTAssertTrue(store.activeWorkspace.isPrivate)
+        XCTAssertFalse(store.session(for: .primary).webView.configuration.websiteDataStore.isPersistent)
+
+        let restored = WorkspaceBrowserStore(defaults: defaults, storageKey: "test.snapshot")
+        XCTAssertEqual(restored.workspaces.count, 1)
+        XCTAssertEqual(restored.activeWorkspace.name, "Main")
+        XCTAssertFalse(restored.activeWorkspace.isPrivate)
+    }
+
+    func testWebsiteDataSummarySeparatesCacheFromLoginStorage() {
+        let cache = BrowserWebsiteDataSummary(
+            displayName: "static.example",
+            dataTypes: [WKWebsiteDataTypeDiskCache]
+        )
+        let login = BrowserWebsiteDataSummary(
+            displayName: "account.example",
+            dataTypes: [WKWebsiteDataTypeCookies, WKWebsiteDataTypeLocalStorage]
+        )
+
+        XCTAssertTrue(cache.containsCache)
+        XCTAssertFalse(cache.containsLoginData)
+        XCTAssertEqual(cache.detailText, "Cache")
+        XCTAssertTrue(login.containsLoginData)
+        XCTAssertEqual(login.detailText, "Cookies & storage")
+    }
+
+    func testLegacySiteSettingsDecodeWithSafePermissionDefaults() throws {
+        let workspaceID = UUID()
+        let json = """
+        {
+          "workspaceID": "\(workspaceID.uuidString)",
+          "host": "example.com",
+          "blockerEnabled": false
+        }
+        """
+
+        let settings = try JSONDecoder().decode(SiteSettingsRecord.self, from: Data(json.utf8))
+
+        XCTAssertEqual(settings.contentMode, .recommended)
+        XCTAssertEqual(settings.cameraPermission, .ask)
+        XCTAssertEqual(settings.microphonePermission, .ask)
+        XCTAssertEqual(settings.motionPermission, .ask)
+        XCTAssertFalse(settings.blockerEnabled)
+    }
+
+    func testNavigationSecurityBlocksScriptedExternalSchemes() {
+        let mailURL = URL(string: "mailto:test@example.com")!
+        let sourceURL = URL(string: "https://example.com")!
+
+        XCTAssertEqual(
+            BrowserNavigationSecurityPolicy.disposition(
+                for: mailURL,
+                sourceURL: sourceURL,
+                navigationType: .other,
+                targetFrameIsMainFrame: true,
+                canOpenExternalURL: true
+            ),
+            .block(reason: "Blocked a website from opening an external app without a direct tap.")
+        )
+        XCTAssertEqual(
+            BrowserNavigationSecurityPolicy.disposition(
+                for: mailURL,
+                sourceURL: sourceURL,
+                navigationType: .linkActivated,
+                targetFrameIsMainFrame: true,
+                canOpenExternalURL: true
+            ),
+            .openExternal
+        )
+    }
+
+    func testNavigationSecurityBlocksRemoteDataURLReplacement() {
+        XCTAssertEqual(
+            BrowserNavigationSecurityPolicy.disposition(
+                for: URL(string: "data:text/html,phishing")!,
+                sourceURL: URL(string: "https://example.com")!,
+                navigationType: .other,
+                targetFrameIsMainFrame: true,
+                canOpenExternalURL: false
+            ),
+            .block(reason: "Blocked a remote page from replacing the tab with local or inline content.")
+        )
+    }
+
+    func testHTTPAuthenticationPolicyAllowsSecurePersistentServerLogin() {
+        let space = URLProtectionSpace(
+            host: "secure.example.com",
+            port: 443,
+            protocol: "https",
+            realm: "Admin",
+            authenticationMethod: NSURLAuthenticationMethodHTTPBasic
+        )
+
+        XCTAssertTrue(BrowserHTTPAuthenticationPolicy.supports(space))
+        XCTAssertTrue(BrowserHTTPAuthenticationPolicy.canSave(space, isPrivate: false))
+        XCTAssertFalse(BrowserHTTPAuthenticationPolicy.canSave(space, isPrivate: true))
+    }
+
+    func testHTTPAuthenticationPolicyDoesNotSaveInsecureOrServerTrustChallenges() {
+        let insecure = URLProtectionSpace(
+            host: "plain.example.com",
+            port: 80,
+            protocol: "http",
+            realm: nil,
+            authenticationMethod: NSURLAuthenticationMethodHTTPBasic
+        )
+        let trust = URLProtectionSpace(
+            host: "secure.example.com",
+            port: 443,
+            protocol: "https",
+            realm: nil,
+            authenticationMethod: NSURLAuthenticationMethodServerTrust
+        )
+
+        XCTAssertFalse(BrowserHTTPAuthenticationPolicy.canSave(insecure, isPrivate: false))
+        XCTAssertFalse(BrowserHTTPAuthenticationPolicy.supports(trust))
+    }
+
+    func testSavedCredentialSummaryFormatsDefaultAndCustomPorts() {
+        let defaultPort = BrowserSavedCredentialSummary(
+            host: "example.com",
+            port: 443,
+            protocolName: "https",
+            realm: "Admin",
+            authenticationMethod: NSURLAuthenticationMethodHTTPBasic,
+            username: "reto"
+        )
+        let customPort = BrowserSavedCredentialSummary(
+            host: "example.com",
+            port: 8443,
+            protocolName: "https",
+            realm: nil,
+            authenticationMethod: NSURLAuthenticationMethodHTTPBasic,
+            username: "reto"
+        )
+
+        XCTAssertEqual(defaultPort.displayHost, "example.com")
+        XCTAssertEqual(defaultPort.detailText, "reto · Admin")
+        XCTAssertEqual(customPort.displayHost, "example.com:8443")
+    }
+
+    func testDownloadFilenameSanitizationPreventsPathTraversalAndControlCharacters() {
+        XCTAssertEqual(
+            BrowserDownloadManager.sanitizedFilename("../secret\u{0000}/report.pdf"),
+            "-secret-report.pdf"
+        )
+        XCTAssertEqual(BrowserDownloadManager.sanitizedFilename("..."), "Download")
+        XCTAssertLessThanOrEqual(BrowserDownloadManager.sanitizedFilename(String(repeating: "a", count: 500)).count, 180)
     }
 
     func testClosedTabCanBeRestored() {

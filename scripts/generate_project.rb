@@ -35,30 +35,6 @@ def add_package_product(project, target, repository_url, requirement, product_na
   target.frameworks_build_phase.files << build_file
 end
 
-add_package_product(
-  project,
-  app_target,
-  "https://github.com/orlandos-nl/Citadel.git",
-  { "kind" => "exactVersion", "version" => "0.12.1" },
-  "Citadel"
-)
-
-add_package_product(
-  project,
-  app_target,
-  "https://github.com/Wellz26/swift-nio-ssh.git",
-  { "kind" => "exactVersion", "version" => "0.3.4" },
-  "NIOSSH"
-)
-
-add_package_product(
-  project,
-  app_target,
-  "https://github.com/apple/swift-nio.git",
-  { "kind" => "upToNextMajorVersion", "minimumVersion" => "2.81.0" },
-  "NIOCore"
-)
-
 sources_group = project.main_group.new_group("Sources", "Sources")
 app_group = sources_group.new_group("RetoBrowser", "RetoBrowser")
 Dir.glob(File.join(ROOT, "Sources/RetoBrowser/*.swift")).sort.each do |path|
@@ -90,6 +66,10 @@ app_target.resources_build_phase.add_file_reference(content_blocker_reference)
 assets_reference = resources_group.new_file("Assets.xcassets")
 assets_reference.last_known_file_type = "folder.assetcatalog"
 app_target.resources_build_phase.add_file_reference(assets_reference)
+
+privacy_manifest_reference = resources_group.new_file("PrivacyInfo.xcprivacy")
+privacy_manifest_reference.last_known_file_type = "text.xml"
+app_target.resources_build_phase.add_file_reference(privacy_manifest_reference)
 
 vendor_group = project.main_group.new_group("Vendor", "Vendor")
 cssh_group = vendor_group.new_group("CSSH", "CSSH")

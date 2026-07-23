@@ -38,23 +38,27 @@ final class WorkspaceBrowserStore {
     @ObservationIgnored let statusMonitor: ServiceStatusMonitor
     @ObservationIgnored let downloadManager: BrowserDownloadManager
     @ObservationIgnored let contentBlocker: BrowserContentBlocker
+    @ObservationIgnored let credentialStorage: URLCredentialStorage
 
     @ObservationIgnored private let defaults: UserDefaults
     @ObservationIgnored private let storageKey: String
     @ObservationIgnored private var sessions: [UUID: BrowserSession] = [:]
+    @ObservationIgnored private var privateDataStores: [UUID: WKWebsiteDataStore] = [:]
 
     init(
         defaults: UserDefaults = .standard,
         storageKey: String = WorkspaceBrowserStore.defaultStorageKey,
         statusMonitor: ServiceStatusMonitor? = nil,
         downloadManager: BrowserDownloadManager? = nil,
-        contentBlocker: BrowserContentBlocker? = nil
+        contentBlocker: BrowserContentBlocker? = nil,
+        credentialStorage: URLCredentialStorage = .shared
     ) {
         self.defaults = defaults
         self.storageKey = storageKey
         self.statusMonitor = statusMonitor ?? ServiceStatusMonitor()
         self.downloadManager = downloadManager ?? BrowserDownloadManager()
         self.contentBlocker = contentBlocker ?? BrowserContentBlocker()
+        self.credentialStorage = credentialStorage
 
         if let data = defaults.data(forKey: storageKey),
            let snapshot = try? JSONDecoder().decode(BrowserSnapshot.self, from: data),
@@ -599,7 +603,7 @@ final class WorkspaceBrowserStore {
 
     func clearCurrentSiteData() {
         guard let host = currentPageURL?.host()?.lowercased() else { return }
-        let dataStore = WKWebsiteDataStore(forIdentifier: activeWorkspaceID)
+        let dataStore = websiteDataStore(for: activeWorkspaceID)
         let types = WKWebsiteDataStore.allWebsiteDataTypes()
         dataStore.fetchDataRecords(ofTypes: types) { [weak self] records in
             let matching = records.filter {
@@ -613,14 +617,93 @@ final class WorkspaceBrowserStore {
         }
     }
 
-    func clearActiveWorkspaceData() {
+    func clearActiveWorkspaceData() async {
         hibernateInactiveTabs()
         sessions.removeAll()
         webViewRevision += 1
-        let store = WKWebsiteDataStore(forIdentifier: activeWorkspaceID)
-        store.removeData(ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(), modifiedSince: .distantPast) { [weak self] in
-            self?.toastMessage = "Workspace website data cleared"
+        let store = websiteDataStore(for: activeWorkspaceID)
+        await withCheckedContinuation { continuation in
+            store.removeData(ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(), modifiedSince: .distantPast) {
+                continuation.resume()
+            }
         }
+        toastMessage = "Workspace website data cleared"
+    }
+
+    func clearActiveWorkspaceCache() async {
+        let cacheTypes: Set<String> = [WKWebsiteDataTypeMemoryCache, WKWebsiteDataTypeDiskCache]
+        await withCheckedContinuation { continuation in
+            websiteDataStore(for: activeWorkspaceID).removeData(ofTypes: cacheTypes, modifiedSince: .distantPast) {
+                continuation.resume()
+            }
+        }
+        toastMessage = "Cache cleared; cookies and sign-ins were kept"
+        session(for: activePane).reloadWithoutCache()
+    }
+
+    func websiteDataSummaries() async -> [BrowserWebsiteDataSummary] {
+        let types = WKWebsiteDataStore.allWebsiteDataTypes()
+        let records: [WKWebsiteDataRecord] = await withCheckedContinuation { continuation in
+            websiteDataStore(for: activeWorkspaceID).fetchDataRecords(ofTypes: types) {
+                continuation.resume(returning: $0)
+            }
+        }
+        return records
+            .map { BrowserWebsiteDataSummary(displayName: $0.displayName, dataTypes: $0.dataTypes) }
+            .sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
+    }
+
+    func removeWebsiteData(_ summary: BrowserWebsiteDataSummary) async {
+        let store = websiteDataStore(for: activeWorkspaceID)
+        let records: [WKWebsiteDataRecord] = await withCheckedContinuation { continuation in
+            store.fetchDataRecords(ofTypes: summary.dataTypes) { continuation.resume(returning: $0) }
+        }
+        let matching = records.filter { $0.displayName.caseInsensitiveCompare(summary.displayName) == .orderedSame }
+        guard !matching.isEmpty else { return }
+        await withCheckedContinuation { continuation in
+            store.removeData(ofTypes: summary.dataTypes, for: matching) { continuation.resume() }
+        }
+        toastMessage = "Removed website data for \(summary.displayName)"
+        if let host = currentPageURL?.host()?.lowercased(),
+           host == summary.displayName.lowercased() || host.hasSuffix(".\(summary.displayName.lowercased())") {
+            session(for: activePane).reloadWithoutCache()
+        }
+    }
+
+    func savedCredentialSummaries() -> [BrowserSavedCredentialSummary] {
+        credentialStorage.allCredentials.flatMap { protectionSpace, credentials in
+            credentials.values.compactMap { credential -> BrowserSavedCredentialSummary? in
+                guard let username = credential.user,
+                      credential.persistence == .permanent || credential.persistence == .synchronizable else {
+                    return nil
+                }
+                return BrowserSavedCredentialSummary(
+                    host: protectionSpace.host,
+                    port: protectionSpace.port,
+                    protocolName: protectionSpace.protocol ?? "",
+                    realm: protectionSpace.realm,
+                    authenticationMethod: protectionSpace.authenticationMethod,
+                    username: username
+                )
+            }
+        }
+        .sorted {
+            if $0.host.caseInsensitiveCompare($1.host) == .orderedSame { return $0.username < $1.username }
+            return $0.host.localizedCaseInsensitiveCompare($1.host) == .orderedAscending
+        }
+    }
+
+    func removeSavedCredential(_ summary: BrowserSavedCredentialSummary) {
+        for (protectionSpace, credentials) in credentialStorage.allCredentials {
+            guard protectionSpace.host.caseInsensitiveCompare(summary.host) == .orderedSame,
+                  protectionSpace.port == summary.port,
+                  (protectionSpace.protocol ?? "").caseInsensitiveCompare(summary.protocolName) == .orderedSame,
+                  protectionSpace.realm == summary.realm,
+                  protectionSpace.authenticationMethod == summary.authenticationMethod,
+                  let credential = credentials[summary.username] else { continue }
+            credentialStorage.remove(credential, for: protectionSpace)
+        }
+        toastMessage = "Removed saved login for \(summary.displayHost)"
     }
 
     func isBookmarked(_ url: URL?) -> Bool {
@@ -775,11 +858,12 @@ final class WorkspaceBrowserStore {
         persist()
     }
 
-    func addWorkspace(name: String) {
+    func addWorkspace(name: String, isPrivate: Bool = false) {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         syncAllSessionsIntoModel()
-        let workspace = BrowserWorkspace.fresh(name: trimmed)
+        let workspace = BrowserWorkspace.fresh(name: trimmed, isPrivate: isPrivate)
+        if isPrivate { privateDataStores[workspace.id] = .nonPersistent() }
         workspaces.append(workspace)
         activeWorkspaceID = workspace.id
         activePane = .primary
@@ -800,8 +884,9 @@ final class WorkspaceBrowserStore {
     }
 
     func deleteWorkspace(_ workspaceID: UUID) {
-        guard workspaces.count > 1,
-              let index = workspaces.firstIndex(where: { $0.id == workspaceID }) else { return }
+        guard let index = workspaces.firstIndex(where: { $0.id == workspaceID }),
+              canDeleteWorkspace(workspaceID) else { return }
+        let wasPrivate = workspaces[index].isPrivate
         let removedTabIDs = workspaces[index].tabs.map(\.id)
         workspaces.remove(at: index)
         removedTabIDs.forEach { sessions.removeValue(forKey: $0) }
@@ -812,7 +897,17 @@ final class WorkspaceBrowserStore {
             activePane = .primary
         }
         persist()
-        Task { try? await WKWebsiteDataStore.remove(forIdentifier: workspaceID) }
+        if wasPrivate {
+            privateDataStores.removeValue(forKey: workspaceID)
+        } else {
+            Task { try? await WKWebsiteDataStore.remove(forIdentifier: workspaceID) }
+        }
+    }
+
+    func canDeleteWorkspace(_ workspaceID: UUID) -> Bool {
+        guard let workspace = workspaces.first(where: { $0.id == workspaceID }) else { return false }
+        if workspace.isPrivate { return workspaces.count > 1 }
+        return workspaces.contains(where: { $0.id != workspaceID && !$0.isPrivate })
     }
 
     func shareCurrentPage() {
@@ -830,7 +925,10 @@ final class WorkspaceBrowserStore {
         persist()
     }
 
-    func resetForTesting() { defaults.removeObject(forKey: storageKey) }
+    func resetForTesting() {
+        defaults.removeObject(forKey: storageKey)
+        privateDataStores.removeAll()
+    }
 
     private var activeWorkspaceIndex: Int {
         workspaces.firstIndex(where: { $0.id == activeWorkspaceID }) ?? 0
@@ -855,6 +953,9 @@ final class WorkspaceBrowserStore {
                 self?.settings(for: url, workspaceID: workspaceID)
                     ?? SiteSettingsRecord(workspaceID: workspaceID, host: url?.host() ?? "")
             },
+            credentialStorage: credentialStorage,
+            isPrivateWorkspace: workspaces.first(where: { $0.id == workspaceID })?.isPrivate == true,
+            websiteDataStore: configuration == nil ? websiteDataStore(for: workspaceID) : nil,
             webViewConfiguration: configuration,
             startsLoaded: startsLoaded,
             newWindowHandler: { [weak self] url, popupConfiguration in
@@ -1084,14 +1185,29 @@ final class WorkspaceBrowserStore {
         }
     }
 
+    private func websiteDataStore(for workspaceID: UUID) -> WKWebsiteDataStore {
+        guard workspaces.first(where: { $0.id == workspaceID })?.isPrivate == true else {
+            return WKWebsiteDataStore(forIdentifier: workspaceID)
+        }
+        if let existing = privateDataStores[workspaceID] { return existing }
+        let store = WKWebsiteDataStore.nonPersistent()
+        privateDataStores[workspaceID] = store
+        return store
+    }
+
     private func persist() {
+        let persistentWorkspaces = workspaces.filter { !$0.isPrivate }
+        guard let fallbackWorkspace = persistentWorkspaces.first else { return }
+        let persistentWorkspaceIDs = Set(persistentWorkspaces.map(\.id))
         let snapshot = BrowserSnapshot(
-            workspaces: workspaces,
-            activeWorkspaceID: activeWorkspaceID,
+            workspaces: persistentWorkspaces,
+            activeWorkspaceID: persistentWorkspaceIDs.contains(activeWorkspaceID)
+                ? activeWorkspaceID
+                : fallbackWorkspace.id,
             groups: groups,
-            bookmarks: bookmarks,
+            bookmarks: bookmarks.filter { $0.workspaceID == nil || persistentWorkspaceIDs.contains($0.workspaceID!) },
             commandBarCollapsed: commandBarCollapsed,
-            siteSettings: siteSettings,
+            siteSettings: siteSettings.filter { persistentWorkspaceIDs.contains($0.workspaceID) },
             autoArchiveAfterDays: autoArchiveAfterDays
         )
         guard let data = try? JSONEncoder().encode(snapshot) else { return }

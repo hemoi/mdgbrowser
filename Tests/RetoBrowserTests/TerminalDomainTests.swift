@@ -121,6 +121,37 @@ final class TerminalDomainTests: XCTestCase {
         XCTAssertEqual(profile.validationMessage, "An OpenSSH private key is required.")
     }
 
+    func testPrivateKeyOneShotCommandsUseLibSSH2Transport() {
+        let profile = SSHProfile(
+            host: "ops.example.com",
+            username: "modot",
+            authenticationKind: .privateKey,
+            privateKey: "-----BEGIN OPENSSH PRIVATE KEY-----\ndummy\n-----END OPENSSH PRIVATE KEY-----"
+        )
+
+        XCTAssertTrue(SSHOneShotCommandRunnerFactory.makeRunner(for: profile) is LibSSH2OneShotCommandRunner)
+    }
+
+    func testProjectDoesNotReferenceRemovedVulnerableSSHPackages() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let project = try String(
+            contentsOf: root.appendingPathComponent("RetoBrowser.xcodeproj/project.pbxproj"),
+            encoding: .utf8
+        )
+        let generator = try String(
+            contentsOf: root.appendingPathComponent("scripts/generate_project.rb"),
+            encoding: .utf8
+        )
+
+        for removedDependency in ["orlandos-nl/Citadel", "Wellz26/swift-nio-ssh", "apple/swift-crypto"] {
+            XCTAssertFalse(project.contains(removedDependency))
+            XCTAssertFalse(generator.contains(removedDependency))
+        }
+    }
+
     func testLegacyPasswordProfileDecodesWithPasswordAuthentication() throws {
         let id = UUID()
         let legacy: [String: Any] = [

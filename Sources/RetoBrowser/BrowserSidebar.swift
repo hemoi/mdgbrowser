@@ -58,8 +58,8 @@ struct BrowserSidebar: View {
     }
 
     private func syncTerminalWorkspaceContext() {
-        terminalStore.setActiveWorkspace(store.activeWorkspaceID)
-        terminalStore.availableWorkspaces = store.workspaces.map {
+        terminalStore.setActiveWorkspace(store.activeWorkspace.isPrivate ? nil : store.activeWorkspaceID)
+        terminalStore.availableWorkspaces = store.workspaces.filter { !$0.isPrivate }.map {
             TerminalWorkspaceSummary(id: $0.id, name: $0.name)
         }
         terminalStore.availableGroups = store.groups
@@ -105,9 +105,13 @@ struct BrowserSidebar: View {
                     store.selectWorkspace(workspace.id)
                 } label: {
                     HStack(spacing: 10) {
-                        Image(systemName: workspace.id == store.activeWorkspaceID ? "circle.inset.filled" : "circle")
-                            .font(.system(size: 9))
-                            .foregroundStyle(workspace.id == store.activeWorkspaceID ? theme.tailnet : theme.mutedLabel)
+                        Image(systemName: workspace.isPrivate
+                            ? "hand.raised.fill"
+                            : (workspace.id == store.activeWorkspaceID ? "circle.inset.filled" : "circle"))
+                            .font(.system(size: workspace.isPrivate ? 11 : 9))
+                            .foregroundStyle(workspace.isPrivate
+                                ? Color.purple
+                                : (workspace.id == store.activeWorkspaceID ? theme.tailnet : theme.mutedLabel))
 
                         Text(workspace.name)
                             .font(.system(size: 13, weight: .medium))
@@ -134,7 +138,7 @@ struct BrowserSidebar: View {
                         terminalStore.resetWorkspaceScopedProfiles(workspace.id)
                         store.deleteWorkspace(workspace.id)
                     }
-                    .disabled(store.workspaces.count == 1)
+                    .disabled(!store.canDeleteWorkspace(workspace.id))
                 }
             }
         }

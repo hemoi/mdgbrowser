@@ -18,15 +18,10 @@ protocol SSHOneShotCommandRunning: Sendable {
     ) async throws -> SSHCommandResult
 }
 
-/// Mirrors the interactive engine choice: libssh2 for password logins (PAM
-/// keyboard-interactive fallback), Citadel for imported private keys.
+/// Uses the same audited libssh2 transport for passwords, keyboard-interactive,
+/// and imported private keys.
 enum SSHOneShotCommandRunnerFactory {
     static func makeRunner(for profile: SSHProfile) -> any SSHOneShotCommandRunning {
-        switch profile.authenticationKind {
-        case .password:
-            LibSSH2OneShotCommandRunner()
-        case .privateKey:
-            CitadelOneShotCommandRunner()
-        }
+        LibSSH2OneShotCommandRunner()
     }
 }

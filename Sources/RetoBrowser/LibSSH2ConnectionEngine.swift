@@ -23,7 +23,7 @@ enum LibSSH2ConnectionError: LocalizedError {
         case .handshakeFailed:
             "The SSH handshake failed."
         case .authenticationFailed:
-            "Authentication failed. Password and keyboard-interactive authentication were attempted."
+            "SSH authentication failed. Check the password, private key, or key passphrase."
         case .hostKeyUnavailable:
             "The SSH server host key could not be verified."
         case .hostKeyRejected:
@@ -87,7 +87,7 @@ nonisolated(unsafe) private let keyboardInteractiveCallback: @convention(c) (
 
 /// Socket/handshake/auth primitives shared by the interactive engine and the
 /// one-shot command runner so both speak the same libssh2 dialect.
-private enum LibSSH2Primitives {
+fileprivate enum LibSSH2Primitives {
     static let runtimeResult: Int32 = libssh2_init(0)
 
     static func connectSocket(host: String, port: Int, shouldAbort: () -> Bool) throws -> Int32 {
@@ -204,6 +204,41 @@ private enum LibSSH2Primitives {
         secret: KeyboardInteractiveSecret
     ) throws {
         let username = profile.username
+        if profile.authenticationKind == .privateKey {
+            guard profile.privateKey.utf8.count <= 1_048_576 else {
+                throw LibSSH2ConnectionError.authenticationFailed
+            }
+            let result = username.withCString { usernamePointer in
+                profile.privateKey.withCString { privateKeyPointer in
+                    if profile.privateKeyPassphrase.isEmpty {
+                        return libssh2_userauth_publickey_frommemory(
+                            session,
+                            usernamePointer,
+                            username.utf8.count,
+                            nil,
+                            0,
+                            privateKeyPointer,
+                            profile.privateKey.utf8.count,
+                            nil
+                        )
+                    }
+                    return profile.privateKeyPassphrase.withCString { passphrasePointer in
+                        libssh2_userauth_publickey_frommemory(
+                            session,
+                            usernamePointer,
+                            username.utf8.count,
+                            nil,
+                            0,
+                            privateKeyPointer,
+                            profile.privateKey.utf8.count,
+                            passphrasePointer
+                        )
+                    }
+                }
+            }
+            guard result == 0 else { throw LibSSH2ConnectionError.authenticationFailed }
+            return
+        }
         let password = profile.password
         let available: String
         if let methods = libssh2_userauth_list(session, username, UInt32(username.utf8.count)) {
@@ -246,6 +281,57 @@ private enum LibSSH2Primitives {
         guard result == 0 else { throw LibSSH2ConnectionError.authenticationFailed }
     }
 
+    static func openAuthenticatedSession(
+        profile rawProfile: SSHProfile,
+        approveHostKey: @escaping SSHHostKeyApproval
+    ) async throws -> (socket: Int32, session: OpaquePointer, fingerprint: String) {
+        guard runtimeResult == 0 else { throw LibSSH2ConnectionError.runtimeInitializationFailed }
+        let profile = rawProfile.normalized
+        let socket = try connectSocket(
+            host: profile.host,
+            port: profile.port,
+            shouldAbort: { Task.isCancelled }
+        )
+        let secret = KeyboardInteractiveSecret()
+        let abstract = Unmanaged.passUnretained(secret).toOpaque()
+        guard let session = libssh2_session_init_ex(nil, nil, nil, abstract) else {
+            Darwin.close(socket)
+            throw LibSSH2ConnectionError.runtimeInitializationFailed
+        }
+        var succeeded = false
+        defer {
+            if !succeeded {
+                secret.set(nil)
+                _ = libssh2_session_disconnect_ex(session, 11, "Authentication failed", "")
+                _ = libssh2_session_free(session)
+                Darwin.close(socket)
+            }
+        }
+
+        libssh2_session_set_blocking(session, 1)
+        libssh2_session_set_timeout(session, 20_000)
+        _ = libssh2_session_method_pref(
+            session,
+            Int32(LIBSSH2_METHOD_HOSTKEY),
+            "ssh-ed25519,ecdsa-sha2-nistp256,rsa-sha2-512,rsa-sha2-256"
+        )
+        guard libssh2_session_handshake(session, socket) == 0 else {
+            throw LibSSH2ConnectionError.handshakeFailed
+        }
+        try Task.checkCancellation()
+        let fingerprint = try hostKeyFingerprint(session: session)
+        if fingerprint != profile.hostKeyFingerprint {
+            guard await approveHostKey(fingerprint, profile.hostKeyFingerprint) else {
+                throw LibSSH2ConnectionError.hostKeyRejected
+            }
+        }
+        try Task.checkCancellation()
+        try authenticate(session: session, profile: profile, secret: secret)
+        secret.set(nil)
+        succeeded = true
+        return (socket, session, fingerprint)
+    }
+
     static func setEnvironment(_ name: String, value: String, channel: OpaquePointer) {
         name.withCString { namePointer in
             value.withCString { valuePointer in
@@ -261,9 +347,8 @@ private enum LibSSH2Primitives {
     }
 }
 
-/// Password SSH transport backed by libssh2. Citadel remains the private-key
-/// transport; libssh2 is used here because SwiftNIO SSH does not implement the
-/// RFC 4256 keyboard-interactive exchange required by many PAM SSH servers.
+/// SSH transport backed by libssh2 for password, keyboard-interactive, and
+/// imported OpenSSH private-key authentication.
 final class LibSSH2ConnectionEngine: SSHConnectionEngineProtocol, @unchecked Sendable {
     private struct TerminalSize: Sendable {
         let cols: Int
@@ -393,7 +478,7 @@ final class LibSSH2ConnectionEngine: SSHConnectionEngineProtocol, @unchecked Sen
         _ = libssh2_session_method_pref(
             session,
             Int32(LIBSSH2_METHOD_HOSTKEY),
-            "ssh-ed25519,ecdsa-sha2-nistp256,rsa-sha2-512,rsa-sha2-256,ssh-rsa"
+            "ssh-ed25519,ecdsa-sha2-nistp256,rsa-sha2-512,rsa-sha2-256"
         )
         guard libssh2_session_handshake(session, socket) == 0 else {
             throw LibSSH2ConnectionError.handshakeFailed
@@ -767,7 +852,7 @@ final class LibSSH2OneShotCommandRunner: SSHOneShotCommandRunning, @unchecked Se
         _ = libssh2_session_method_pref(
             session,
             Int32(LIBSSH2_METHOD_HOSTKEY),
-            "ssh-ed25519,ecdsa-sha2-nistp256,rsa-sha2-512,rsa-sha2-256,ssh-rsa"
+            "ssh-ed25519,ecdsa-sha2-nistp256,rsa-sha2-512,rsa-sha2-256"
         )
         guard libssh2_session_handshake(session, socket) == 0 else {
             throw LibSSH2ConnectionError.handshakeFailed
@@ -827,5 +912,284 @@ final class LibSSH2OneShotCommandRunner: SSHOneShotCommandRunning, @unchecked Se
         _ = libssh2_channel_wait_closed(openedChannel)
         let exitCode = libssh2_channel_get_exit_status(openedChannel)
         return SSHCommandResult(exitCode: exitCode, output: String(decoding: output, as: UTF8.self))
+    }
+}
+
+/// Foreground-only localhost forward implemented with the same libssh2
+/// transport as terminal sessions. Each accepted browser connection gets its
+/// own SSH connection, avoiding cross-thread access to a libssh2 session.
+final class SSHLocalPortForwardService: @unchecked Sendable {
+    private let lock = NSLock()
+    private var listenerDescriptor: Int32 = -1
+    private var acceptTask: Task<Void, Never>?
+    private var bridgeTasks: [UUID: Task<Void, Never>] = [:]
+
+    func start(
+        forward rawForward: SSHLocalPortForward,
+        profile rawProfile: SSHProfile,
+        approveHostKey: @escaping SSHHostKeyApproval
+    ) async throws {
+        let forward = rawForward.normalized
+        let profile = rawProfile.normalized
+        guard forward.validationMessage == nil else { throw LibSSH2ConnectionError.connectionFailed }
+
+        // Authenticate before advertising the local listener as active. The
+        // approved fingerprint is then pinned for every forwarded connection.
+        let probe = try await LibSSH2Primitives.openAuthenticatedSession(
+            profile: profile,
+            approveHostKey: approveHostKey
+        )
+        let approvedFingerprint = probe.fingerprint
+        Self.closeSSHSession(socket: probe.socket, session: probe.session)
+
+        let listener = try Self.makeLoopbackListener(port: forward.localPort)
+        let claimed = lock.withLock { () -> Bool in
+            guard listenerDescriptor < 0 else { return false }
+            listenerDescriptor = listener
+            return true
+        }
+        guard claimed else {
+            Darwin.close(listener)
+            throw LibSSH2ConnectionError.connectionFailed
+        }
+        let task: Task<Void, Never> = Task.detached(priority: .utility) { [weak self] in
+            guard let self else { return }
+            await self.acceptConnections(
+                listener: listener,
+                forward: forward,
+                profile: profile,
+                approvedFingerprint: approvedFingerprint
+            )
+        }
+        lock.withLock {
+            if listenerDescriptor == listener {
+                acceptTask = task
+            } else {
+                task.cancel()
+            }
+        }
+    }
+
+    func stop() async {
+        let stopped = lock.withLock { () -> (Int32, Task<Void, Never>?, [Task<Void, Never>]) in
+            let values = (listenerDescriptor, acceptTask, Array(bridgeTasks.values))
+            listenerDescriptor = -1
+            acceptTask = nil
+            bridgeTasks.removeAll()
+            return values
+        }
+
+        stopped.1?.cancel()
+        stopped.2.forEach { $0.cancel() }
+        if stopped.0 >= 0 {
+            Darwin.shutdown(stopped.0, SHUT_RDWR)
+            Darwin.close(stopped.0)
+        }
+    }
+
+    private func acceptConnections(
+        listener: Int32,
+        forward: SSHLocalPortForward,
+        profile: SSHProfile,
+        approvedFingerprint: String
+    ) async {
+        while !Task.isCancelled {
+            var state = pollfd(fd: listener, events: Int16(POLLIN), revents: 0)
+            let ready = poll(&state, 1, 250)
+            if ready < 0, errno == EINTR { continue }
+            guard ready > 0 else { continue }
+            guard state.revents & Int16(POLLERR | POLLHUP | POLLNVAL) == 0 else { break }
+
+            var address = sockaddr_storage()
+            var length = socklen_t(MemoryLayout<sockaddr_storage>.size)
+            let localSocket = withUnsafeMutablePointer(to: &address) { pointer in
+                pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                    Darwin.accept(listener, $0, &length)
+                }
+            }
+            guard localSocket >= 0 else {
+                if errno == EINTR || errno == EAGAIN { continue }
+                break
+            }
+
+            let bridgeID = UUID()
+            let task = Task.detached(priority: .utility) { [weak self] in
+                defer {
+                    Darwin.shutdown(localSocket, SHUT_RDWR)
+                    Darwin.close(localSocket)
+                    self?.removeBridge(bridgeID)
+                }
+                do {
+                    try await Self.bridge(
+                        localSocket: localSocket,
+                        forward: forward,
+                        profile: profile,
+                        approvedFingerprint: approvedFingerprint
+                    )
+                } catch {
+                    // The browser connection observes EOF. Runtime state is
+                    // kept local so credentials and packet data are not logged.
+                }
+            }
+            lock.withLock { bridgeTasks[bridgeID] = task }
+        }
+    }
+
+    private func removeBridge(_ id: UUID) {
+        _ = lock.withLock { bridgeTasks.removeValue(forKey: id) }
+    }
+
+    private static func bridge(
+        localSocket: Int32,
+        forward: SSHLocalPortForward,
+        profile: SSHProfile,
+        approvedFingerprint: String
+    ) async throws {
+        let connection = try await LibSSH2Primitives.openAuthenticatedSession(
+            profile: profile,
+            approveHostKey: { fingerprint, _ in fingerprint == approvedFingerprint }
+        )
+        defer { closeSSHSession(socket: connection.socket, session: connection.session) }
+        guard connection.fingerprint == approvedFingerprint else {
+            throw LibSSH2ConnectionError.hostKeyRejected
+        }
+
+        let channel = forward.remoteHost.withCString { remoteHost in
+            libssh2_channel_direct_tcpip_ex(
+                connection.session,
+                remoteHost,
+                Int32(forward.remotePort),
+                "127.0.0.1",
+                Int32(forward.localPort)
+            )
+        }
+        guard let channel else { throw LibSSH2ConnectionError.channelFailed }
+        defer {
+            _ = libssh2_channel_close(channel)
+            _ = libssh2_channel_free(channel)
+        }
+
+        try LibSSH2Primitives.setNonBlocking(localSocket)
+        try LibSSH2Primitives.setNonBlocking(connection.socket)
+        libssh2_session_set_blocking(connection.session, 0)
+
+        var localBuffer = [CChar](repeating: 0, count: 32_768)
+        var remoteBuffer = [CChar](repeating: 0, count: 32_768)
+        while !Task.isCancelled, libssh2_channel_eof(channel) == 0 {
+            var descriptors = [
+                pollfd(fd: localSocket, events: Int16(POLLIN), revents: 0),
+                pollfd(fd: connection.socket, events: Int16(POLLIN | POLLOUT), revents: 0),
+            ]
+            let ready = poll(&descriptors, 2, 250)
+            if ready < 0, errno == EINTR { continue }
+            guard ready >= 0 else { throw LibSSH2ConnectionError.transportFailed }
+            if descriptors[0].revents & Int16(POLLERR | POLLHUP | POLLNVAL) != 0 { break }
+            if descriptors[1].revents & Int16(POLLERR | POLLHUP | POLLNVAL) != 0 { break }
+
+            if descriptors[0].revents & Int16(POLLIN) != 0 {
+                let count = localBuffer.withUnsafeMutableBytes {
+                    Darwin.recv(localSocket, $0.baseAddress, $0.count, 0)
+                }
+                if count == 0 { break }
+                if count < 0, errno != EAGAIN && errno != EWOULDBLOCK {
+                    throw LibSSH2ConnectionError.transportFailed
+                }
+                if count > 0 {
+                    try writeToChannel(
+                        channel,
+                        session: connection.session,
+                        socket: connection.socket,
+                        bytes: localBuffer,
+                        count: count
+                    )
+                }
+            }
+
+            while true {
+                let count = libssh2_channel_read_ex(channel, 0, &remoteBuffer, remoteBuffer.count)
+                if count > 0 {
+                    try writeToLocalSocket(localSocket, bytes: remoteBuffer, count: count)
+                } else if count == Int(LIBSSH2_ERROR_EAGAIN) || count == 0 {
+                    break
+                } else {
+                    throw LibSSH2ConnectionError.transportFailed
+                }
+            }
+        }
+    }
+
+    private static func writeToChannel(
+        _ channel: OpaquePointer,
+        session: OpaquePointer,
+        socket: Int32,
+        bytes: [CChar],
+        count: Int
+    ) throws {
+        var offset = 0
+        while offset < count {
+            let written = bytes.withUnsafeBufferPointer { buffer in
+                libssh2_channel_write_ex(channel, 0, buffer.baseAddress! + offset, count - offset)
+            }
+            if written > 0 {
+                offset += written
+            } else if written == Int(LIBSSH2_ERROR_EAGAIN) {
+                try LibSSH2Primitives.waitForSocket(session: session, descriptor: socket, timeoutMilliseconds: 5_000)
+            } else {
+                throw LibSSH2ConnectionError.transportFailed
+            }
+        }
+    }
+
+    private static func writeToLocalSocket(_ socket: Int32, bytes: [CChar], count: Int) throws {
+        var offset = 0
+        while offset < count {
+            let written = bytes.withUnsafeBytes { buffer in
+                Darwin.send(socket, buffer.baseAddress! + offset, count - offset, 0)
+            }
+            if written > 0 {
+                offset += written
+            } else if written < 0, errno == EAGAIN || errno == EWOULDBLOCK {
+                var descriptor = pollfd(fd: socket, events: Int16(POLLOUT), revents: 0)
+                guard poll(&descriptor, 1, 5_000) > 0 else {
+                    throw LibSSH2ConnectionError.transportFailed
+                }
+            } else {
+                throw LibSSH2ConnectionError.transportFailed
+            }
+        }
+    }
+
+    private static func makeLoopbackListener(port: Int) throws -> Int32 {
+        let descriptor = Darwin.socket(AF_INET, SOCK_STREAM, 0)
+        guard descriptor >= 0 else { throw LibSSH2ConnectionError.connectionFailed }
+        var shouldClose = true
+        defer { if shouldClose { Darwin.close(descriptor) } }
+
+        var enabled: Int32 = 1
+        setsockopt(descriptor, SOL_SOCKET, SO_REUSEADDR, &enabled, socklen_t(MemoryLayout<Int32>.size))
+        setsockopt(descriptor, SOL_SOCKET, SO_NOSIGPIPE, &enabled, socklen_t(MemoryLayout<Int32>.size))
+        var address = sockaddr_in()
+        address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        address.sin_family = sa_family_t(AF_INET)
+        address.sin_port = in_port_t(UInt16(port).bigEndian)
+        address.sin_addr = in_addr(s_addr: inet_addr("127.0.0.1"))
+        let bindResult = withUnsafePointer(to: &address) { pointer in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                Darwin.bind(descriptor, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+            }
+        }
+        guard bindResult == 0, Darwin.listen(descriptor, 64) == 0 else {
+            throw LibSSH2ConnectionError.connectionFailed
+        }
+        try LibSSH2Primitives.setNonBlocking(descriptor)
+        shouldClose = false
+        return descriptor
+    }
+
+    private static func closeSSHSession(socket: Int32, session: OpaquePointer) {
+        _ = libssh2_session_disconnect_ex(session, 11, "Normal shutdown", "")
+        _ = libssh2_session_free(session)
+        Darwin.shutdown(socket, SHUT_RDWR)
+        Darwin.close(socket)
     }
 }

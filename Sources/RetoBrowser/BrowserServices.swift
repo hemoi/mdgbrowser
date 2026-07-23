@@ -397,8 +397,12 @@ final class BrowserDownloadManager: NSObject, WKDownloadDelegate {
     private func uniqueDestination(for suggestedFilename: String) -> URL {
         let directory = Self.downloadsDirectory
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try? FileManager.default.setAttributes(
+            [.protectionKey: FileProtectionType.complete],
+            ofItemAtPath: directory.path
+        )
 
-        let sanitized = suggestedFilename.replacingOccurrences(of: "/", with: "-")
+        let sanitized = Self.sanitizedFilename(suggestedFilename)
         let proposed = directory.appendingPathComponent(sanitized.nonEmpty ?? "Download")
         guard FileManager.default.fileExists(atPath: proposed.path) else { return proposed }
 
@@ -410,6 +414,18 @@ final class BrowserDownloadManager: NSObject, WKDownloadDelegate {
             if !FileManager.default.fileExists(atPath: candidate.path) { return candidate }
         }
         return directory.appendingPathComponent("\(UUID().uuidString)-\(sanitized)")
+    }
+
+    static func sanitizedFilename(_ suggestedFilename: String) -> String {
+        let forbidden = CharacterSet.controlCharacters.union(CharacterSet(charactersIn: "/\\:"))
+        let components = suggestedFilename.precomposedStringWithCanonicalMapping.components(separatedBy: forbidden)
+        var sanitized = components.filter { !$0.isEmpty }.joined(separator: "-")
+            .trimmingCharacters(in: .whitespacesAndNewlines.union(CharacterSet(charactersIn: ".")))
+        if sanitized.count > 180 {
+            let suffix = String(sanitized.suffix(40))
+            sanitized = String(sanitized.prefix(139)) + "-" + suffix
+        }
+        return sanitized.nonEmpty ?? "Download"
     }
 
     private func persist() {

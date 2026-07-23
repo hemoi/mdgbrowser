@@ -1,3 +1,4 @@
+import AuthenticationServices
 import Foundation
 import Observation
 import SwiftUI
@@ -8,6 +9,8 @@ enum BrowserAIProvider: String, Codable, CaseIterable, Identifiable {
     case chatGPT
     case claude
     case gemini
+    case grok
+    case perplexity
     case custom
 
     var id: String { rawValue }
@@ -17,6 +20,8 @@ enum BrowserAIProvider: String, Codable, CaseIterable, Identifiable {
         case .chatGPT: "ChatGPT"
         case .claude: "Claude"
         case .gemini: "Gemini"
+        case .grok: "Grok"
+        case .perplexity: "Perplexity"
         case .custom: "Custom"
         }
     }
@@ -24,8 +29,10 @@ enum BrowserAIProvider: String, Codable, CaseIterable, Identifiable {
     var systemImage: String {
         switch self {
         case .chatGPT: "sparkles"
-        case .claude: "text.bubble"
-        case .gemini: "diamond"
+        case .claude: "sun.max.fill"
+        case .gemini: "sparkles"
+        case .grok: "xmark"
+        case .perplexity: "point.3.connected.trianglepath.dotted"
         case .custom: "link"
         }
     }
@@ -35,9 +42,32 @@ enum BrowserAIProvider: String, Codable, CaseIterable, Identifiable {
         case .chatGPT: URL(string: "https://chatgpt.com/")
         case .claude: URL(string: "https://claude.ai/new")
         case .gemini: URL(string: "https://gemini.google.com/app")
+        case .grok: URL(string: "https://grok.com/")
+        case .perplexity: URL(string: "https://www.perplexity.ai/")
         case .custom: nil
         }
     }
+
+    var iconURL: URL? {
+        switch self {
+        case .chatGPT:
+            URL(string: "https://images.ctfassets.net/j22is2dtoxu1/intercom-img-d177d076c9a5453052925143/49d5d812b0a6fcc20a14faa8c629d9fb/icon-ios-1024_401x.png")
+        case .claude:
+            URL(string: "https://claude.ai/apple-touch-icon.png")
+        case .gemini:
+            URL(string: "https://www.gstatic.com/lamda/images/gemini_sparkle_4g_512_lt_f94943af3be039176192d.png")
+        case .grok:
+            URL(string: "https://grok.com/images/android-chrome-192x192.png")
+        case .perplexity:
+            URL(string: "https://www.perplexity.ai/apple-touch-icon.png")
+        case .custom:
+            nil
+        }
+    }
+
+    static let quickAccessProviders: [BrowserAIProvider] = [
+        .chatGPT, .claude, .gemini, .grok, .perplexity
+    ]
 }
 
 struct BrowserAISettings: Codable, Equatable {
@@ -45,6 +75,30 @@ struct BrowserAISettings: Codable, Equatable {
     var customName = ""
     var customURLString = ""
     var websiteDataStoreID = UUID()
+
+    init(
+        provider: BrowserAIProvider = .chatGPT,
+        customName: String = "",
+        customURLString: String = "",
+        websiteDataStoreID: UUID = UUID()
+    ) {
+        self.provider = provider
+        self.customName = customName
+        self.customURLString = customURLString
+        self.websiteDataStoreID = websiteDataStoreID
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case provider, customName, customURLString, websiteDataStoreID
+    }
+
+    init(from decoder: any Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        provider = try values.decodeIfPresent(BrowserAIProvider.self, forKey: .provider) ?? .chatGPT
+        customName = try values.decodeIfPresent(String.self, forKey: .customName) ?? ""
+        customURLString = try values.decodeIfPresent(String.self, forKey: .customURLString) ?? ""
+        websiteDataStoreID = try values.decodeIfPresent(UUID.self, forKey: .websiteDataStoreID) ?? UUID()
+    }
 
     var displayName: String {
         guard provider == .custom else { return provider.title }
@@ -74,22 +128,51 @@ struct BrowserAISettings: Codable, Equatable {
     }
 }
 
+enum BrowserPasskeyAccessState: Equatable {
+    case unavailable
+    case notDetermined
+    case authorized
+    case denied
+
+    var title: String {
+        switch self {
+        case .unavailable: "Unavailable on this device"
+        case .notDetermined: "Not enabled"
+        case .authorized: "Enabled"
+        case .denied: "Blocked in Settings"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .unavailable: "key.slash"
+        case .notDetermined: "key"
+        case .authorized: "key.fill"
+        case .denied: "key.slash.fill"
+        }
+    }
+}
+
 @MainActor
 @Observable
 final class BrowserAIStore {
     static let defaultStorageKey = "reto-browser.ai-settings.v1"
+    private static let maximumCachedSessions = 2
 
     var settings: BrowserAISettings
     var isPresented = false
     var settingsPresented = false
     var prompt = ""
     var statusMessage: String?
+    private(set) var passkeyAccessState: BrowserPasskeyAccessState = .unavailable
 
     @ObservationIgnored private let defaults: UserDefaults
     @ObservationIgnored private let storageKey: String
     @ObservationIgnored private let contentBlocker = BrowserContentBlocker()
     @ObservationIgnored private let downloadManager = BrowserDownloadManager()
-    @ObservationIgnored private var sessionStorage: BrowserSession?
+    @ObservationIgnored private let passkeyCredentialManager = ASAuthorizationWebBrowserPublicKeyCredentialManager()
+    @ObservationIgnored private var sessionStorage: [BrowserAIProvider: BrowserSession] = [:]
+    @ObservationIgnored private var sessionRecency: [BrowserAIProvider] = []
 
     init(
         defaults: UserDefaults = .standard,
@@ -100,13 +183,11 @@ final class BrowserAIStore {
         settings = (defaults.data(forKey: storageKey))
             .flatMap { try? JSONDecoder().decode(BrowserAISettings.self, from: $0) }
             ?? BrowserAISettings()
+        refreshPasskeyAccessState()
     }
 
     var session: BrowserSession {
-        if let sessionStorage { return sessionStorage }
-        let session = makeSession()
-        sessionStorage = session
-        return session
+        session(for: settings.provider)
     }
 
     func present() {
@@ -131,9 +212,9 @@ final class BrowserAIStore {
             present()
             return
         }
+        sessionStorage[settings.provider]?.stopLoading()
         settings.provider = provider
         persist()
-        sessionStorage = nil
         present()
     }
 
@@ -143,8 +224,12 @@ final class BrowserAIStore {
             statusMessage = "Enter a valid http or https URL for the custom AI."
             return false
         }
+        let customDestinationChanged = settings.customURLString != candidate.customURLString
         settings = candidate
-        sessionStorage = nil
+        if customDestinationChanged {
+            sessionStorage.removeValue(forKey: .custom)
+            sessionRecency.removeAll(where: { $0 == .custom })
+        }
         persist()
         if isPresented {
             session.open(settings.effectiveURL)
@@ -171,12 +256,56 @@ final class BrowserAIStore {
         statusMessage = "Prompt copied. Paste it into the AI chat."
     }
 
-    private func makeSession() -> BrowserSession {
+    func refreshPasskeyAccessState() {
+        passkeyAccessState = Self.passkeyState(
+            from: passkeyCredentialManager.authorizationStateForPlatformCredentials
+        )
+    }
+
+    func requestPasskeyAccess() {
+        refreshPasskeyAccessState()
+        switch passkeyAccessState {
+        case .authorized:
+            statusMessage = "Passkeys and iCloud Keychain are enabled for web sign-in."
+        case .unavailable:
+            statusMessage = "Set up passkeys in iCloud Keychain on this device first."
+        case .denied:
+            statusMessage = "Allow Reto Browser in Settings › Privacy & Security › Passkeys Access for Web Browsers."
+        case .notDetermined:
+            passkeyCredentialManager.requestAuthorizationForPublicKeyCredentials { [weak self] state in
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    self.passkeyAccessState = Self.passkeyState(from: state)
+                    self.statusMessage = self.passkeyAccessState == .authorized
+                        ? "Passkeys and iCloud Keychain are enabled for web sign-in."
+                        : "Passkey access wasn’t enabled. You can change it later in Settings."
+                }
+            }
+        }
+    }
+
+    private func session(for provider: BrowserAIProvider) -> BrowserSession {
+        if let existing = sessionStorage[provider] {
+            touchSession(provider)
+            return existing
+        }
+        let session = makeSession(for: provider)
+        sessionStorage[provider] = session
+        touchSession(provider)
+        trimSessionCache(keeping: provider)
+        return session
+    }
+
+    private func makeSession(for provider: BrowserAIProvider) -> BrowserSession {
         let workspaceID = settings.websiteDataStoreID
+        let destination = provider == .custom
+            ? settings.effectiveURL
+            : (provider.defaultURL ?? BrowserAIProvider.chatGPT.defaultURL!)
+        let displayName = provider == .custom ? settings.displayName : provider.title
         let record = BrowserTabRecord(
             id: UUID(),
-            title: "AI · \(settings.displayName)",
-            urlString: settings.effectiveURL.absoluteString,
+            title: "AI · \(displayName)",
+            urlString: destination.absoluteString,
             isPinned: true,
             groupID: nil
         )
@@ -193,11 +322,36 @@ final class BrowserAIStore {
                 )
             },
             newWindowHandler: { [weak self] url, _ in
-                if let url { self?.session.open(url) }
+                if let url { self?.session(for: provider).open(url) }
                 return nil
             },
             closeHandler: { [weak self] in self?.dismiss() }
         )
+    }
+
+    private func touchSession(_ provider: BrowserAIProvider) {
+        sessionRecency.removeAll(where: { $0 == provider })
+        sessionRecency.append(provider)
+    }
+
+    private func trimSessionCache(keeping provider: BrowserAIProvider) {
+        while sessionStorage.count > Self.maximumCachedSessions,
+              let candidate = sessionRecency.first(where: { $0 != provider }) {
+            sessionStorage[candidate]?.stopLoading()
+            sessionStorage.removeValue(forKey: candidate)
+            sessionRecency.removeAll(where: { $0 == candidate })
+        }
+    }
+
+    private static func passkeyState(
+        from state: ASAuthorizationWebBrowserPublicKeyCredentialManager.AuthorizationState
+    ) -> BrowserPasskeyAccessState {
+        switch state {
+        case .authorized: .authorized
+        case .denied: .denied
+        case .notDetermined: .notDetermined
+        @unknown default: .unavailable
+        }
     }
 
     private func persist() {
@@ -269,6 +423,7 @@ private struct BrowserAIPanel: View {
         }
         .accessibilityIdentifier("browser.ai.panel")
         .task(id: session.instanceID) {
+            aiStore.refreshPasskeyAccessState()
             session.loadIfNeeded(fallbackURLString: aiStore.settings.effectiveURL.absoluteString)
         }
         .alert(
@@ -285,42 +440,48 @@ private struct BrowserAIPanel: View {
     }
 
     private var panelHeader: some View {
-        HStack(spacing: 8) {
-            Menu {
-                ForEach(BrowserAIProvider.allCases) { provider in
-                    Button {
-                        aiStore.activate(provider)
-                    } label: {
-                        if provider == aiStore.settings.provider {
-                            Label(provider.title, systemImage: "checkmark")
-                        } else {
-                            Label(provider.title, systemImage: provider.systemImage)
-                        }
+        let providers = aiStore.settings.provider == .custom
+            ? [.custom] + BrowserAIProvider.quickAccessProviders
+            : BrowserAIProvider.quickAccessProviders
+
+        return HStack(spacing: 4) {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 4) {
+                    ForEach(providers) { provider in
+                        providerButton(provider)
                     }
                 }
-                Divider()
-                Button("AI settings", systemImage: "gearshape") {
-                    aiStore.settingsPresented = true
-                }
-            } label: {
-                HStack(spacing: 5) {
-                    Text(aiStore.settings.displayName)
-                        .lineLimit(1)
-                    Image(systemName: "chevron.down")
-                        .font(.system(size: 8, weight: .bold))
-                        .foregroundStyle(theme.mutedLabel)
-                }
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(theme.label)
-                .padding(.horizontal, 9)
-                .frame(height: 30)
-                .background(theme.raisedBackground, in: RoundedRectangle(cornerRadius: 7))
             }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Select AI provider")
-            .accessibilityIdentifier("ai.settings")
+            .scrollClipDisabled()
 
             Spacer(minLength: 0)
+
+            Button {
+                aiStore.requestPasskeyAccess()
+            } label: {
+                Image(systemName: aiStore.passkeyAccessState.systemImage)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(passkeyColor)
+                    .frame(width: 34, height: 34)
+                    .background(theme.raisedBackground, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Passkey access")
+            .accessibilityValue(aiStore.passkeyAccessState.title)
+            .accessibilityHint("Double tap to let websites use passkeys from iCloud Keychain and enabled password managers.")
+            .accessibilityIdentifier("ai.passkeys")
+
+            Button {
+                aiStore.settingsPresented = true
+            } label: {
+                Image(systemName: "gearshape")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(theme.label)
+                    .frame(width: 34, height: 34)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("AI settings")
+            .accessibilityIdentifier("ai.settings")
 
             Button {
                 withAnimation(reduceMotion ? .linear(duration: 0.14) : .snappy(duration: 0.24)) {
@@ -338,6 +499,52 @@ private struct BrowserAIPanel: View {
         }
         .padding(.horizontal, 10)
         .frame(height: 44)
+    }
+
+    private func providerButton(_ provider: BrowserAIProvider) -> some View {
+        let selected = provider == aiStore.settings.provider
+
+        return Button {
+            withAnimation(reduceMotion ? .easeOut(duration: 0.12) : .snappy(duration: 0.24, extraBounce: 0.04)) {
+                aiStore.activate(provider)
+            }
+        } label: {
+            HStack(spacing: 5) {
+                AIProviderIcon(provider: provider)
+
+                if selected {
+                    Text(provider == .custom ? aiStore.settings.displayName : provider.title)
+                        .font(.system(size: 10, weight: .semibold, design: .rounded))
+                        .lineLimit(1)
+                        .transition(.opacity.combined(with: .scale(scale: 0.92)))
+                }
+            }
+            .foregroundStyle(theme.label)
+            .padding(.horizontal, selected ? 7 : 5)
+            .frame(height: 34)
+            .background {
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(selected ? theme.label.opacity(0.09) : Color.clear)
+            }
+            .overlay {
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .stroke(selected ? theme.label.opacity(0.22) : Color.clear, lineWidth: 0.75)
+            }
+            .frame(minWidth: 44, minHeight: 44)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Open \(provider == .custom ? aiStore.settings.displayName : provider.title)")
+        .accessibilityAddTraits(selected ? [.isSelected] : [])
+        .accessibilityIdentifier("ai.provider.\(provider.rawValue)")
+    }
+
+    private var passkeyColor: Color {
+        switch aiStore.passkeyAccessState {
+        case .authorized: theme.tailnet
+        case .denied: .red
+        case .notDetermined, .unavailable: theme.label
+        }
     }
 
     private var promptComposer: some View {
@@ -415,6 +622,55 @@ private struct BrowserAIPanel: View {
     }
 }
 
+private struct AIProviderIcon: View {
+    let provider: BrowserAIProvider
+
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .fill(Color.white)
+
+            if let iconURL = provider.iconURL {
+                AsyncImage(
+                    url: iconURL,
+                    transaction: Transaction(animation: .easeOut(duration: 0.16))
+                ) { phase in
+                    switch phase {
+                    case .success(let image):
+                        image
+                            .resizable()
+                            .scaledToFit()
+                    case .empty:
+                        ProgressView()
+                            .controlSize(.mini)
+                            .tint(.black.opacity(0.55))
+                    case .failure:
+                        fallbackMark
+                    @unknown default:
+                        fallbackMark
+                    }
+                }
+                .padding(2)
+            } else {
+                fallbackMark
+            }
+        }
+        .frame(width: 24, height: 24)
+        .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .stroke(Color.black.opacity(0.08), lineWidth: 0.5)
+        }
+        .accessibilityHidden(true)
+    }
+
+    private var fallbackMark: some View {
+        Image(systemName: provider.systemImage)
+            .font(.system(size: 11, weight: .semibold))
+            .foregroundStyle(Color.black)
+    }
+}
+
 private struct AIWebView: UIViewRepresentable {
     let session: BrowserSession
 
@@ -472,6 +728,45 @@ struct BrowserAISettingsSheet: View {
                     } footer: {
                         Text("Use an http or https URL for a browser-based chat app.")
                     }
+                }
+
+                Section {
+                    VStack(spacing: 0) {
+                        HStack {
+                            Text("Password AutoFill")
+                            Spacer()
+                            Label("iCloud Keychain", systemImage: "checkmark.circle.fill")
+                                .foregroundStyle(theme.tailnet)
+                        }
+                        .frame(maxWidth: .infinity, minHeight: 44, maxHeight: 44)
+
+                        Divider()
+
+                        Button {
+                            aiStore.requestPasskeyAccess()
+                        } label: {
+                            HStack {
+                                Label("Passkey access", systemImage: aiStore.passkeyAccessState.systemImage)
+                                Spacer()
+                                Text(aiStore.passkeyAccessState.title)
+                                    .foregroundStyle(.secondary)
+                            }
+                            .frame(maxWidth: .infinity, minHeight: 44, maxHeight: 44)
+                        }
+                        .buttonStyle(.plain)
+
+                        if aiStore.passkeyAccessState == .denied {
+                            Divider()
+                            Text("Enable Reto Browser in Settings › Privacy & Security › Passkeys Access for Web Browsers.")
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                                .padding(.vertical, 8)
+                        }
+                    }
+                } header: {
+                    Text("Passwords & Passkeys")
+                } footer: {
+                    Text("WebKit asks iCloud Keychain or your enabled password manager for credentials. Reto stores website cookies and local site data in one persistent, isolated AI profile; it never copies your password into app settings.")
                 }
 
                 Section("Page handoff") {

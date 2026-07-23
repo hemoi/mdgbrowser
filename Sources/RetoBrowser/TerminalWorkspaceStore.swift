@@ -105,7 +105,7 @@ final class TerminalSession: Identifiable {
     /// profile's fixed one.
     @ObservationIgnored let tmuxAttach: TmuxAttachIntent?
     @ObservationIgnored let terminalView: RetoTerminalView
-    @ObservationIgnored private var engine: any SSHConnectionEngineProtocol = SSHConnectionEngine()
+    @ObservationIgnored private var engine: any SSHConnectionEngineProtocol = LibSSH2ConnectionEngine()
     @ObservationIgnored private let approveHostKey: HostKeyApproval
     @ObservationIgnored private let eventHandler: EventHandler
     @ObservationIgnored private var connectionTask: Task<Void, Never>?
@@ -339,12 +339,7 @@ final class TerminalSession: Identifiable {
     }
 
     private static func makeConnectionEngine(for profile: SSHProfile) -> any SSHConnectionEngineProtocol {
-        switch profile.authenticationKind {
-        case .password:
-            LibSSH2ConnectionEngine()
-        case .privateKey:
-            SSHConnectionEngine()
-        }
+        LibSSH2ConnectionEngine()
     }
 }
 

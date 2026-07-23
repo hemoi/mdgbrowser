@@ -38,6 +38,27 @@ final class BrowserAIStoreTests: XCTestCase {
         let restored = BrowserAIStore(defaults: defaults, storageKey: "ai-test")
         XCTAssertEqual(restored.settings.provider, .gemini)
         XCTAssertEqual(restored.settings.effectiveURL.host(), "gemini.google.com")
+        XCTAssertEqual(restored.settings.websiteDataStoreID, settings.websiteDataStoreID)
+    }
+
+    func testQuickAccessProvidersIncludeGrokAndPerplexity() {
+        XCTAssertEqual(
+            BrowserAIProvider.quickAccessProviders,
+            [.chatGPT, .claude, .gemini, .grok, .perplexity]
+        )
+        XCTAssertEqual(BrowserAIProvider.grok.defaultURL?.host(), "grok.com")
+        XCTAssertEqual(BrowserAIProvider.perplexity.defaultURL?.host(), "www.perplexity.ai")
+    }
+
+    func testLegacySettingsWithoutWebsiteProfileIDStillDecode() throws {
+        let data = Data(
+            #"{"provider":"claude","customName":"","customURLString":""}"#.utf8
+        )
+
+        let settings = try JSONDecoder().decode(BrowserAISettings.self, from: data)
+
+        XCTAssertEqual(settings.provider, .claude)
+        XCTAssertFalse(settings.websiteDataStoreID.uuidString.isEmpty)
     }
 
     func testCurrentPagePromptIncludesTitleAndURL() {

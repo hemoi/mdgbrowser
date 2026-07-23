@@ -110,6 +110,7 @@ struct BrowserCommandPalette: View {
             action("Site settings", "switch.2", store.currentPageURL?.host()) { store.presentedSheet = .siteSettings },
             action("Tab history and archive", "archivebox", "Browser") { store.presentedSheet = .tabArchive },
             action("Downloads", "arrow.down.circle", "Browser") { store.presentedSheet = .downloads },
+            action("Website data", "externaldrive.badge.icloud", "Privacy") { store.presentedSheet = .websiteData },
             action("New tab stack", "square.stack.3d.up", "Tabs") { store.presentedSheet = .createTabStack },
             action("Refresh service status", "wave.3.right", "Services") { store.refreshServiceStatuses() },
             action("Open SSH terminal", "terminal", "SSH") {
@@ -124,7 +125,11 @@ struct BrowserCommandPalette: View {
         ]
 
         result += store.workspaces.map { workspace in
-            action("Switch to \(workspace.name)", "square.grid.2x2", "Workspace · isolated session") {
+            action(
+                "Switch to \(workspace.name)",
+                workspace.isPrivate ? "hand.raised.fill" : "square.grid.2x2",
+                workspace.isPrivate ? "Workspace · private in-memory session" : "Workspace · isolated session"
+            ) {
                 store.selectWorkspace(workspace.id)
             }
         }

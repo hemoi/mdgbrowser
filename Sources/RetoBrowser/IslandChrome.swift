@@ -21,6 +21,7 @@ enum IslandChromePresentation: Equatable {
 /// sensor housing (and iPad) fall back to the regular `CompactCommandBar`.
 struct IslandChrome: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Namespace private var islandMorphNamespace
 
     let store: WorkspaceBrowserStore
     let terminalStore: TerminalWorkspaceStore
@@ -76,18 +77,10 @@ struct IslandChrome: View {
             switch presentation {
             case .expanded:
                 expandedSurface(clusterHeight: clusterHeight)
-                    .transition(
-                        reduceMotion
-                            ? .opacity
-                            : .scale(scale: 0.94, anchor: .top).combined(with: .opacity)
-                    )
+                    .transition(.opacity)
             case .collapsedWithTabs:
                 collapsedTabbedSurface(clusterHeight: clusterHeight)
-                    .transition(
-                        reduceMotion
-                            ? .opacity
-                            : .scale(scale: 0.96, anchor: .top).combined(with: .opacity)
-                    )
+                    .transition(.opacity)
             case .collapsed:
                 islandRail(clusterHeight: clusterHeight, embedded: false, centerActivatesIsland: true)
                     .transition(.opacity)
@@ -102,7 +95,7 @@ struct IslandChrome: View {
         .animation(
             reduceMotion
                 ? .easeOut(duration: 0.12)
-                : .spring(response: 0.38, dampingFraction: 0.84, blendDuration: 0.1),
+                : .snappy(duration: 0.34, extraBounce: 0.08),
             value: store.islandExpanded
         )
         .animation(
@@ -129,6 +122,9 @@ struct IslandChrome: View {
         let pillHeight: CGFloat = 36
         let statusRailGap: CGFloat = 8
         let statusColor = embedded ? IslandColors.onSurface : Color.primary
+        let islandExpansionAction: (() -> Void)? = centerActivatesIsland
+            ? { expandIsland() }
+            : nil
 
         return HStack(spacing: statusRailGap) {
             statusTime(color: statusColor)
@@ -139,7 +135,8 @@ struct IslandChrome: View {
                     accessibilityLabel: "Back",
                     dimmed: !session.canGoBack,
                     height: pillHeight,
-                    action: { if session.canGoBack { session.goBack() } }
+                    action: { if session.canGoBack { session.goBack() } },
+                    onLongPress: islandExpansionAction
                 )
                 .accessibilityIdentifier("browser.island.pill.back")
 
@@ -156,12 +153,15 @@ struct IslandChrome: View {
                     height: pillHeight,
                     action: {
                         if session.isLoading { session.stopLoading() } else { session.reload() }
-                    }
+                    },
+                    onLongPress: islandExpansionAction
                 )
                 .accessibilityIdentifier("browser.island.pill.reload")
             }
             .frame(height: 44)
-            .background(IslandColors.surface, in: Capsule())
+            .background {
+                islandRailShell(embedded: embedded)
+            }
 
             statusIndicators(color: statusColor)
         }
@@ -198,41 +198,48 @@ struct IslandChrome: View {
 
     private func islandActivationZone(width: CGFloat, height: CGFloat) -> some View {
         Button {
-            RetoHaptics.islandTransition(expanded: true)
-            store.islandExpanded = true
+            expandIsland()
         } label: {
-            Color.clear
-                .frame(width: width, height: height)
-                .contentShape(Capsule())
+            // A nearly transparent fill keeps this whole reserve an explicit
+            // hit target. `Color.clear` alone can be dropped from hit testing
+            // in a nested HStack on some iOS releases, which made the island
+            // look tappable while only its neighbouring pills responded.
+            Rectangle()
+                .fill(Color.black.opacity(0.001))
         }
         .buttonStyle(.plain)
+        .frame(width: width, height: height)
+        .contentShape(Rectangle())
         .accessibilityLabel("Expand browser controls")
-        .accessibilityHint("Double tap the Dynamic Island area to show the address and browser menu.")
+        .accessibilityHint("Tap the Dynamic Island area to show the address and browser menu.")
         .accessibilityIdentifier("browser.island.expand")
     }
 
-    /// A collapsed control performs only its visible action. Expansion is
-    /// owned exclusively by the center island activation zone, preventing a
-    /// navigation tap from being misclassified as a chrome gesture.
+    private func expandIsland() {
+        guard !store.islandExpanded else { return }
+        RetoHaptics.islandTransition(expanded: true)
+        store.islandExpanded = true
+    }
+
+    /// A normal tap performs only the visible action. Touch-and-hold expands
+    /// the island instead; the button suppresses its tap action after the
+    /// long press has won the gesture so Back/Reload cannot fire accidentally.
     private func pill(
         systemName: String,
         accessibilityLabel: String,
         dimmed: Bool,
         height: CGFloat,
-        action: @escaping () -> Void
+        action: @escaping () -> Void,
+        onLongPress: (() -> Void)? = nil
     ) -> some View {
-        Button(action: action) {
-            Image(systemName: systemName)
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(IslandColors.onSurface.opacity(dimmed ? 0.35 : 1))
-                .frame(width: height * 1.18, height: height)
-                .frame(width: 44, height: 44)
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .disabled(dimmed)
-        .accessibilityLabel(accessibilityLabel)
-        .accessibilityHint("Double tap to activate.")
+        IslandPillButton(
+            systemName: systemName,
+            accessibilityLabel: accessibilityLabel,
+            dimmed: dimmed,
+            height: height,
+            action: action,
+            onLongPress: onLongPress
+        )
     }
 
     // MARK: Expanded surface
@@ -242,7 +249,9 @@ struct IslandChrome: View {
     /// The rail and shelf share one silhouette so the tabs do not read as a
     /// separate floating toolbar.
     private func collapsedTabbedSurface(clusterHeight: CGFloat) -> some View {
-        VStack(spacing: 0) {
+        let cornerRadius = islandSurfaceCornerRadius(clusterHeight: clusterHeight)
+
+        return VStack(spacing: 0) {
             islandRail(clusterHeight: clusterHeight, embedded: true, centerActivatesIsland: true)
 
             IslandTabList(store: store)
@@ -250,12 +259,11 @@ struct IslandChrome: View {
                 .padding(.bottom, 8)
         }
         .background {
-            RoundedRectangle(cornerRadius: GlassMetrics.surfaceCornerRadius, style: .continuous)
-                .fill(IslandColors.expandedSurface)
+            islandSurfaceShell(cornerRadius: cornerRadius)
                 .padding(.top, GlassMetrics.surfaceTopInset)
         }
         .overlay {
-            RoundedRectangle(cornerRadius: GlassMetrics.surfaceCornerRadius, style: .continuous)
+            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                 .stroke(IslandColors.onSurface.opacity(0.07), lineWidth: GlassMetrics.hairline)
                 .padding(.top, GlassMetrics.surfaceTopInset)
         }
@@ -267,8 +275,9 @@ struct IslandChrome: View {
     private func expandedSurface(clusterHeight: CGFloat) -> some View {
         let session = store.session(for: store.activePane)
         let currentTabID = store.selectedTabID(for: store.activePane)
+        let cornerRadius = islandSurfaceCornerRadius(clusterHeight: clusterHeight)
 
-        return VStack(spacing: 8) {
+        return VStack(spacing: 6) {
             islandRail(clusterHeight: clusterHeight, embedded: true, centerActivatesIsland: false)
 
             AddressDisplayField(store: store, terminalStore: terminalStore, dragTabID: currentTabID)
@@ -317,14 +326,13 @@ struct IslandChrome: View {
             }
         }
         .padding(.horizontal, 8)
-        .padding(.bottom, 10)
+        .padding(.bottom, 8)
         .background {
-            RoundedRectangle(cornerRadius: GlassMetrics.surfaceCornerRadius, style: .continuous)
-                .fill(IslandColors.expandedSurface)
+            islandSurfaceShell(cornerRadius: cornerRadius)
                 .padding(.top, GlassMetrics.surfaceTopInset)
         }
         .overlay {
-            RoundedRectangle(cornerRadius: GlassMetrics.surfaceCornerRadius, style: .continuous)
+            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                 .stroke(IslandColors.onSurface.opacity(0.07), lineWidth: GlassMetrics.hairline)
                 .padding(.top, GlassMetrics.surfaceTopInset)
         }
@@ -343,6 +351,40 @@ struct IslandChrome: View {
             store.islandExpanded = false
         }
         .accessibilityIdentifier("browser.island.surface")
+    }
+
+    private func islandSurfaceCornerRadius(clusterHeight: CGFloat) -> CGFloat {
+        // The top safe-area inset tracks the sensor/display family. Keep the
+        // radius within a controlled range so smaller devices do not become
+        // pill-shaped while Dynamic-Island phones still match the display's
+        // generous continuous corners.
+        min(
+            GlassMetrics.surfaceCornerRadius,
+            max(40, clusterHeight - GlassMetrics.surfaceTopInset)
+        )
+    }
+
+    @ViewBuilder
+    private func islandRailShell(embedded: Bool) -> some View {
+        if embedded || reduceMotion {
+            Capsule().fill(IslandColors.surface)
+        } else {
+            Capsule()
+                .fill(IslandColors.surface)
+                .matchedGeometryEffect(id: "browser.island.shell", in: islandMorphNamespace)
+        }
+    }
+
+    @ViewBuilder
+    private func islandSurfaceShell(cornerRadius: CGFloat) -> some View {
+        if reduceMotion {
+            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                .fill(IslandColors.expandedSurface)
+        } else {
+            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                .fill(IslandColors.expandedSurface)
+                .matchedGeometryEffect(id: "browser.island.shell", in: islandMorphNamespace)
+        }
     }
 
     private var batteryPercentage: Int {
@@ -401,6 +443,9 @@ struct IslandChrome: View {
                     .disabled(store.recentlyClosedTabs.isEmpty)
                 Button("Tab history", systemImage: "tray.full") { store.presentedSheet = .tabArchive }
                 Button("Downloads", systemImage: "arrow.down.circle") { store.presentedSheet = .downloads }
+                Button("Website data", systemImage: "externaldrive.badge.icloud") {
+                    store.presentedSheet = .websiteData
+                }
             }
 
             Section {
@@ -423,6 +468,62 @@ struct IslandChrome: View {
         .buttonStyle(.plain)
         .accessibilityLabel("More browser actions")
         .accessibilityIdentifier("browser.island.menu")
+    }
+}
+
+private struct IslandPillButton: View {
+    let systemName: String
+    let accessibilityLabel: String
+    let dimmed: Bool
+    let height: CGFloat
+    let action: () -> Void
+    let onLongPress: (() -> Void)?
+
+    @State private var longPressTriggered = false
+
+    @ViewBuilder
+    var body: some View {
+        if let onLongPress {
+            button
+                .highPriorityGesture(
+                    LongPressGesture(minimumDuration: 0.45, maximumDistance: 18)
+                        .onEnded { _ in
+                            longPressTriggered = true
+                            onLongPress()
+                        }
+                )
+        } else {
+            button
+        }
+    }
+
+    private var button: some View {
+        Button {
+            if longPressTriggered {
+                // The long-press callback already expanded the island. The
+                // release that follows it must not also navigate or reload.
+                longPressTriggered = false
+                return
+            }
+            action()
+        } label: {
+            Image(systemName: systemName)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(IslandColors.onSurface.opacity(dimmed ? 0.35 : 1))
+                .frame(width: height * 1.18, height: height)
+                .frame(width: 44, height: 44)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        // A disabled Back icon can still be used as an expansion affordance
+        // while collapsed; its normal action remains guarded by the session.
+        .disabled(dimmed && onLongPress == nil)
+        .accessibilityLabel(accessibilityLabel)
+        .accessibilityHint(
+            onLongPress == nil
+                ? "Double tap to activate."
+                : "Double tap to activate. Touch and hold to expand browser controls."
+        )
     }
 }
 
@@ -493,6 +594,13 @@ private struct AddressDisplayField: View {
         @Bindable var session = browserSession
 
         HStack(spacing: 6) {
+            if store.activeWorkspace.isPrivate {
+                Image(systemName: "hand.raised.fill")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(Color.purple)
+                    .accessibilityLabel("Private workspace")
+            }
+
             Image(systemName: session.hasOnlySecureContent ? "lock.fill" : "exclamationmark.triangle.fill")
                 .font(.system(size: 11, weight: .semibold))
                 .foregroundStyle(session.hasOnlySecureContent ? IslandColors.onSurfaceMuted : Color.orange)
@@ -534,12 +642,17 @@ private struct AddressDisplayField: View {
             .fixedSize(horizontal: false, vertical: false)
         }
         .padding(.horizontal, 10)
-        .frame(height: 40)
+        .frame(height: GlassMetrics.addressHitHeight)
         .frame(maxWidth: .infinity)
-        .background(IslandColors.controlFill, in: RoundedRectangle(cornerRadius: GlassMetrics.controlCornerRadius, style: .continuous))
+        .background {
+            RoundedRectangle(cornerRadius: GlassMetrics.controlCornerRadius, style: .continuous)
+                .fill(IslandColors.controlFill)
+                .frame(height: GlassMetrics.addressVisualHeight)
+        }
         .overlay {
             RoundedRectangle(cornerRadius: GlassMetrics.controlCornerRadius, style: .continuous)
                 .stroke(focused ? IslandColors.onSurface : Color.clear, lineWidth: 1.5)
+                .frame(height: GlassMetrics.addressVisualHeight)
         }
         .tabDragGesture(store: store, tabID: dragTabID, simultaneous: true)
         .accessibilityIdentifier("browser.address")

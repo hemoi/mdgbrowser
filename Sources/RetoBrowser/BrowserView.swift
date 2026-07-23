@@ -115,7 +115,7 @@ struct BrowserView: View {
                     .zIndex(3)
             }
 
-            if terminalStore.launcherEnabled {
+            if terminalStore.launcherEnabled, !terminalStore.phoneSheetMinimized {
                 VStack {
                     Spacer()
                     HStack {
@@ -130,13 +130,8 @@ struct BrowserView: View {
             }
 
             if !isPad, terminalStore.phoneSheetMinimized {
-                VStack(spacing: 0) {
-                    Spacer(minLength: 0)
-                    MinimizedTerminalHandle(store: terminalStore)
-                        .padding(.bottom, 2)
-                }
-                .ignoresSafeArea(edges: .bottom)
-                .transition(reduceMotion ? .opacity : .move(edge: .bottom).combined(with: .opacity))
+                MinimizedTerminalPiP(store: terminalStore)
+                    .transition(reduceMotion ? .opacity : .opacity.combined(with: .scale(scale: 0.92)))
                 .zIndex(7)
             }
 

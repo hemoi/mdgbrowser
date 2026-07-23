@@ -35,6 +35,7 @@ struct CreateTabStackSheet: View {
 struct SiteSettingsSheet: View {
     @Environment(\.dismiss) private var dismiss
     @State private var settings: SiteSettingsRecord
+    @State private var pendingClear: ClearAction?
     let store: WorkspaceBrowserStore
 
     init(store: WorkspaceBrowserStore) {
@@ -70,14 +71,15 @@ struct SiteSettingsSheet: View {
                 Section("Permissions") {
                     permissionPicker("Camera", selection: $settings.cameraPermission)
                     permissionPicker("Microphone", selection: $settings.microphonePermission)
+                    permissionPicker("Motion & Orientation", selection: $settings.motionPermission)
                 }
 
                 Section {
                     Button("Clear This Site’s Data", role: .destructive) {
-                        store.clearCurrentSiteData()
+                        pendingClear = .site
                     }
                     Button("Clear All Data in This Workspace", role: .destructive) {
-                        store.clearActiveWorkspaceData()
+                        pendingClear = .workspace
                     }
                 } footer: {
                     Text("Cookies, cache and local storage are isolated per workspace.")
@@ -96,6 +98,29 @@ struct SiteSettingsSheet: View {
                 .disabled(settings.host.isEmpty)
             }
         }
+        .confirmationDialog(
+            pendingClear == .workspace ? "Clear all workspace data?" : "Clear this site’s data?",
+            isPresented: Binding(
+                get: { pendingClear != nil },
+                set: { if !$0 { pendingClear = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("Clear Website Data", role: .destructive) {
+                let action = pendingClear
+                pendingClear = nil
+                if action == .workspace {
+                    Task { await store.clearActiveWorkspaceData() }
+                } else {
+                    store.clearCurrentSiteData()
+                }
+            }
+            Button("Cancel", role: .cancel) { pendingClear = nil }
+        } message: {
+            Text(pendingClear == .workspace
+                ? "This signs you out of every website in this workspace."
+                : "This may sign you out of \(settings.host).")
+        }
     }
 
     private func permissionPicker(_ title: String, selection: Binding<BrowserPermission>) -> some View {
@@ -104,6 +129,11 @@ struct SiteSettingsSheet: View {
                 Text(permission.label).tag(permission)
             }
         }
+    }
+
+    private enum ClearAction {
+        case site
+        case workspace
     }
 }
 
@@ -285,7 +315,10 @@ struct BrowserDeveloperToolsSheet: View {
                 Button("Done") { dismiss() }
             }
         }
-        .task { await refresh(session) }
+        .task {
+            await session.enableDeveloperInstrumentation()
+            await refresh(session)
+        }
         .onChange(of: copyStatus) {
             guard !copyStatus.isEmpty else { return }
             Task {
@@ -710,6 +743,230 @@ struct DownloadsSheet: View {
         case .completed: .green
         case .failed: .red
         }
+    }
+}
+
+struct WebsiteDataSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @State private var summaries: [BrowserWebsiteDataSummary] = []
+    @State private var savedCredentials: [BrowserSavedCredentialSummary] = []
+    @State private var isLoading = true
+    @State private var isWorking = false
+    @State private var pendingAction: PendingAction?
+
+    let store: WorkspaceBrowserStore
+
+    var body: some View {
+        FeatureSheetScaffold(title: "Website Data") {
+            List {
+                Section {
+                    Label {
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(store.activeWorkspace.name)
+                            Text(store.activeWorkspace.isPrivate ? "In-memory private session" : "Persistent isolated profile")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    } icon: {
+                        Image(systemName: store.activeWorkspace.isPrivate ? "hand.raised.fill" : "person.crop.circle.badge.checkmark")
+                            .foregroundStyle(store.activeWorkspace.isPrivate ? Color.purple : Color.accentColor)
+                    }
+                } footer: {
+                    Text("WebKit manages HTTP cache, cookies, local storage, IndexedDB, and service data separately for each workspace.")
+                }
+
+                Section("Storage Controls") {
+                    Button {
+                        pendingAction = .clearCache
+                    } label: {
+                        Label("Clear Cache, Keep Sign-ins", systemImage: "externaldrive.badge.xmark")
+                    }
+
+                    Button(role: .destructive) {
+                        pendingAction = .clearAll
+                    } label: {
+                        Label("Clear All Website Data", systemImage: "trash")
+                    }
+                }
+                .disabled(isWorking)
+
+                Section("Sites") {
+                    if isLoading {
+                        HStack {
+                            ProgressView()
+                            Text("Reading WebKit storage…")
+                                .foregroundStyle(.secondary)
+                        }
+                    } else if summaries.isEmpty {
+                        ContentUnavailableView("No Website Data", systemImage: "checkmark.shield")
+                    } else {
+                        ForEach(summaries) { summary in
+                            HStack(spacing: 12) {
+                                Image(systemName: summary.containsLoginData ? "key.fill" : "externaldrive.fill")
+                                    .foregroundStyle(summary.containsLoginData ? Color.orange : Color.secondary)
+                                    .frame(width: 24)
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text(summary.displayName)
+                                        .lineLimit(1)
+                                    Text(summary.detailText)
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                Button(role: .destructive) {
+                                    pendingAction = .remove(summary)
+                                } label: {
+                                    Image(systemName: "trash")
+                                        .frame(width: 44, height: 44)
+                                }
+                                .buttonStyle(.plain)
+                                .accessibilityLabel("Remove data for \(summary.displayName)")
+                            }
+                            .swipeActions {
+                                Button("Delete", role: .destructive) { pendingAction = .remove(summary) }
+                            }
+                        }
+                    }
+                }
+
+                Section {
+                    if savedCredentials.isEmpty {
+                        Text("No saved HTTP server logins")
+                            .foregroundStyle(.secondary)
+                    } else {
+                        ForEach(savedCredentials) { credential in
+                            HStack(spacing: 12) {
+                                Image(systemName: "key.fill")
+                                    .foregroundStyle(.orange)
+                                    .frame(width: 24)
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text(credential.displayHost)
+                                        .lineLimit(1)
+                                    Text(credential.detailText)
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                Button(role: .destructive) {
+                                    pendingAction = .removeCredential(credential)
+                                } label: {
+                                    Image(systemName: "trash")
+                                        .frame(width: 44, height: 44)
+                                }
+                                .buttonStyle(.plain)
+                                .accessibilityLabel("Remove saved login for \(credential.displayHost)")
+                            }
+                            .swipeActions {
+                                Button("Delete", role: .destructive) {
+                                    pendingAction = .removeCredential(credential)
+                                }
+                            }
+                        }
+                    }
+                } header: {
+                    Text("Saved Server Logins")
+                } footer: {
+                    Text("Only HTTP server-authentication passwords you explicitly saved appear here. Website form passwords and passkeys remain managed by iCloud Keychain or your enabled password manager.")
+                }
+            }
+            .refreshable { await refresh() }
+            .overlay {
+                if isWorking {
+                    ProgressView()
+                        .padding(16)
+                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                }
+            }
+        } toolbar: {
+            ToolbarItem(placement: .confirmationAction) {
+                Button("Done") { dismiss() }
+            }
+        }
+        .task(id: store.activeWorkspaceID) { await refresh() }
+        .confirmationDialog(
+            confirmationTitle,
+            isPresented: Binding(
+                get: { pendingAction != nil },
+                set: { if !$0 { pendingAction = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button(confirmationButtonTitle, role: .destructive) {
+                guard let action = pendingAction else { return }
+                pendingAction = nil
+                Task { await perform(action) }
+            }
+            Button("Cancel", role: .cancel) { pendingAction = nil }
+        } message: {
+            Text(confirmationMessage)
+        }
+    }
+
+    private var confirmationTitle: String {
+        switch pendingAction {
+        case .clearCache: "Clear cached files?"
+        case .clearAll: "Clear all website data?"
+        case .remove(let summary): "Remove \(summary.displayName)?"
+        case .removeCredential(let credential): "Remove login for \(credential.displayHost)?"
+        case nil: "Confirm"
+        }
+    }
+
+    private var confirmationButtonTitle: String {
+        switch pendingAction {
+        case .clearCache: "Clear Cache"
+        case .clearAll: "Clear Everything"
+        case .remove: "Remove Site Data"
+        case .removeCredential: "Remove Saved Login"
+        case nil: "Continue"
+        }
+    }
+
+    private var confirmationMessage: String {
+        switch pendingAction {
+        case .clearCache:
+            "Cookies, local storage, and signed-in sessions will be preserved."
+        case .clearAll:
+            "This signs you out of websites in this workspace and removes cache, cookies, and local databases."
+        case .remove(let summary):
+            summary.containsLoginData
+                ? "This may sign you out of \(summary.displayName)."
+                : "Cached and stored data for this site will be removed."
+        case .removeCredential:
+            "The username and password will be removed from this app’s Keychain."
+        case nil:
+            ""
+        }
+    }
+
+    private func refresh() async {
+        isLoading = true
+        summaries = await store.websiteDataSummaries()
+        savedCredentials = store.savedCredentialSummaries()
+        isLoading = false
+    }
+
+    private func perform(_ action: PendingAction) async {
+        isWorking = true
+        switch action {
+        case .clearCache:
+            await store.clearActiveWorkspaceCache()
+        case .clearAll:
+            await store.clearActiveWorkspaceData()
+        case .remove(let summary):
+            await store.removeWebsiteData(summary)
+        case .removeCredential(let credential):
+            store.removeSavedCredential(credential)
+        }
+        await refresh()
+        isWorking = false
+    }
+
+    private enum PendingAction {
+        case clearCache
+        case clearAll
+        case remove(BrowserWebsiteDataSummary)
+        case removeCredential(BrowserSavedCredentialSummary)
     }
 }
 

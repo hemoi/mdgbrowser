@@ -21,21 +21,19 @@
 		10BE6616AF00AF5D97AB7993 /* WorkspaceCanvas.swift in Sources */ = {isa = PBXBuildFile; fileRef = 54AC9820475A8606F77F278C /* WorkspaceCanvas.swift */; };
 		11068D9092B7F1887AD4EFA8 /* SwiftTerm.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 7A7D2E13F2EBFF6C4D53BA3B /* SwiftTerm.framework */; };
 		13F04ED13475D8A2E6123D02 /* BrowserPetStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DBB641AE5D7B51BA2AE3F82C /* BrowserPetStoreTests.swift */; };
-		13F74C94A35F813FFB6F000A /* NIOSSH in Frameworks */ = {isa = PBXBuildFile; productRef = 09B8A425AB7709AFDA1BAE24 /* NIOSSH */; };
 		15AF014114203299D1468A93 /* SixelDcsHandler.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5BE75992DC7B2910AC802F05 /* SixelDcsHandler.swift */; };
 		1628DADC827F75217EF0CDBD /* TerminalDomainTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 30CF53F30C6945C373A949E0 /* TerminalDomainTests.swift */; };
 		180C3DE8D65E0026248FF452 /* ContentBlocker in Resources */ = {isa = PBXBuildFile; fileRef = 76AAB5BA72C4109EA249C845 /* ContentBlocker */; };
+		18C1D23A7AFC40A0AE97A837 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = D2B86CC9B4544CCEA682463B /* PrivacyInfo.xcprivacy */; };
 		1A9433E8D301E3B724376284 /* THIRD_PARTY_NOTICES.md in Resources */ = {isa = PBXBuildFile; fileRef = 0EB5E57BB8D552E8F99586B1 /* THIRD_PARTY_NOTICES.md */; };
 		1D3188D0864573F60BF88A50 /* WorkspaceBrowserStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 31227480FAA8C9D5742D8C91 /* WorkspaceBrowserStoreTests.swift */; };
 		1EE541278832B3BC44A8DB50 /* DeveloperConsoleSelectionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 687F2A4ABBD2958BD9BDC95F /* DeveloperConsoleSelectionTests.swift */; };
 		1F2D5C44841E344241ABA9DB /* PetPackageInstallerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3EDD1E2ED6953479A188FE94 /* PetPackageInstallerTests.swift */; };
 		209906C0E68E95207C1BC91B /* CodexPetGallery.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8E8C066214FFED07DF21E64A /* CodexPetGallery.swift */; };
-		23B949BA78D22AF1C2DCD584 /* NIOCore in Frameworks */ = {isa = PBXBuildFile; productRef = C6D142646118722FABC1C571 /* NIOCore */; };
 		24B1FCE4230D316B6DFE61BC /* BrowserSidebar.swift in Sources */ = {isa = PBXBuildFile; fileRef = 69DC28D43617D04241154B62 /* BrowserSidebar.swift */; };
 		272AFE1848030117CC6DE28A /* TerminalWorkspaceStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5B08694075CA2588F6569399 /* TerminalWorkspaceStoreTests.swift */; };
 		2D726D464AD6630E00C948F9 /* TabOverviewStrip.swift in Sources */ = {isa = PBXBuildFile; fileRef = E582E28F41FB2673076B6F39 /* TabOverviewStrip.swift */; };
 		2E10FCB5593192C67AF09C8D /* SyncDebug.swift in Sources */ = {isa = PBXBuildFile; fileRef = FE0EE1CA652E854DE995B84B /* SyncDebug.swift */; };
-		30D214C569DD43E2A64B5C4C /* Citadel in Frameworks */ = {isa = PBXBuildFile; productRef = 1EB5242642996E2916F0929E /* Citadel */; };
 		36E23F3B9E7CFCB6AB70A4BE /* SearchEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 511BB111A438318E94A690E8 /* SearchEngine.swift */; };
 		3966CFF8B70C1C7B8925B08E /* iOSKeyboardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = DA115536BEADBC10EFB6ED4E /* iOSKeyboardView.swift */; };
 		3C91DAF19509F4DEA606CA3D /* SwiftUITerminalView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 61CB64EB86FB453B905A7247 /* SwiftUITerminalView.swift */; };
@@ -217,6 +215,7 @@
 		7127948B0ED95E326D91A2AE /* TerminalViewSearch.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = TerminalViewSearch.swift; sourceTree = "<group>"; };
 		741D9D878D805907C0F13DB3 /* TabOverviewLayoutTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = TabOverviewLayoutTests.swift; sourceTree = "<group>"; };
 		76AAB5BA72C4109EA249C845 /* ContentBlocker */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = folder; path = ContentBlocker; sourceTree = "<group>"; };
+		D2B86CC9B4544CCEA682463B /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		76D3D24E1C549AB8479A99E3 /* GlyphAtlas.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = GlyphAtlas.swift; path = Apple/Metal/GlyphAtlas.swift; sourceTree = "<group>"; };
 		77DC4D3BA840E50C206C9879 /* BrowserIntentRouter.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = BrowserIntentRouter.swift; sourceTree = "<group>"; };
 		7A7D2E13F2EBFF6C4D53BA3B /* SwiftTerm.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = SwiftTerm.framework; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -291,9 +290,6 @@
 			files = (
 				FF30F438B02DA45451CD13DB /* Foundation.framework in Frameworks */,
 				11068D9092B7F1887AD4EFA8 /* SwiftTerm.framework in Frameworks */,
-				30D214C569DD43E2A64B5C4C /* Citadel in Frameworks */,
-				13F74C94A35F813FFB6F000A /* NIOSSH in Frameworks */,
-				23B949BA78D22AF1C2DCD584 /* NIOCore in Frameworks */,
 				EFBD2045CA6388E38802BC22 /* CSSH.xcframework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -346,6 +342,7 @@
 				C8F8914BBFB8FA647EDCDDEA /* Pets */,
 				76AAB5BA72C4109EA249C845 /* ContentBlocker */,
 				2B2399800AEADF600564EA7F /* Assets.xcassets */,
+				D2B86CC9B4544CCEA682463B /* PrivacyInfo.xcprivacy */,
 			);
 			path = Resources;
 			sourceTree = "<group>";
@@ -562,9 +559,6 @@
 			);
 			name = RetoBrowser;
 			packageProductDependencies = (
-				1EB5242642996E2916F0929E /* Citadel */,
-				09B8A425AB7709AFDA1BAE24 /* NIOSSH */,
-				C6D142646118722FABC1C571 /* NIOCore */,
 			);
 			productName = RetoBrowser;
 			productReference = 43CC55483D8465271A551547 /* RetoBrowser.app */;
@@ -625,9 +619,6 @@
 			);
 			mainGroup = F9114FF2309AD2EE14E42B5E;
 			packageReferences = (
-				DA622D74087C6B06ED4C5F57 /* XCRemoteSwiftPackageReference "Citadel" */,
-				3B6B0E1D8897868BBAC0692B /* XCRemoteSwiftPackageReference "swift-nio-ssh" */,
-				2580CF28E79F1A7773A1391E /* XCRemoteSwiftPackageReference "swift-nio" */,
 			);
 			productRefGroup = 778F84D8E1BFB1FB60905175 /* Products */;
 			projectDirPath = "";
@@ -655,6 +646,7 @@
 				F4E864CF95DCFFEAE8FD5126 /* Pets in Resources */,
 				180C3DE8D65E0026248FF452 /* ContentBlocker in Resources */,
 				7BA94A03EEA39335ADC900B6 /* Assets.xcassets in Resources */,
+				18C1D23A7AFC40A0AE97A837 /* PrivacyInfo.xcprivacy in Resources */,
 				1A9433E8D301E3B724376284 /* THIRD_PARTY_NOTICES.md in Resources */,
 				781CCA1E0322DE9CA6D905E7 /* libssh2-COPYING in Resources */,
 				835B3F821F5EBA1901FE13C4 /* openssl-LICENSE.txt in Resources */,
@@ -1007,7 +999,7 @@
 				CLANG_ENABLE_OBJC_WEAK = NO;
 				"CODE_SIGN_IDENTITY[sdk=iphoneos*]" = "iPhone Distribution";
 				CODE_SIGN_STYLE = Manual;
-				CURRENT_PROJECT_VERSION = 2;
+				CURRENT_PROJECT_VERSION = 3;
 				DEVELOPMENT_TEAM = "";
 				"DEVELOPMENT_TEAM[sdk=iphoneos*]" = Q3N5A977S4;
 				ENABLE_PREVIEWS = YES;
@@ -1018,7 +1010,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.0.1;
+				MARKETING_VERSION = 1.0.2;
 				PRODUCT_BUNDLE_IDENTIFIER = dev.modot.RetoBrowser;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				PROVISIONING_PROFILE_SPECIFIER = "";
@@ -1070,7 +1062,7 @@
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CLANG_ENABLE_OBJC_WEAK = NO;
-				CURRENT_PROJECT_VERSION = 2;
+				CURRENT_PROJECT_VERSION = 3;
 				DEVELOPMENT_TEAM = Q3N5A977S4;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -1080,7 +1072,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.0.1;
+				MARKETING_VERSION = 1.0.2;
 				PRODUCT_BUNDLE_IDENTIFIER = dev.modot.RetoBrowser;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;
@@ -1131,50 +1123,6 @@
 		};
 /* End XCConfigurationList section */
 
-/* Begin XCRemoteSwiftPackageReference section */
-		2580CF28E79F1A7773A1391E /* XCRemoteSwiftPackageReference "swift-nio" */ = {
-			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/apple/swift-nio.git";
-			requirement = {
-				kind = upToNextMajorVersion;
-				minimumVersion = 2.81.0;
-			};
-		};
-		3B6B0E1D8897868BBAC0692B /* XCRemoteSwiftPackageReference "swift-nio-ssh" */ = {
-			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/Wellz26/swift-nio-ssh.git";
-			requirement = {
-				kind = exactVersion;
-				version = 0.3.4;
-			};
-		};
-		DA622D74087C6B06ED4C5F57 /* XCRemoteSwiftPackageReference "Citadel" */ = {
-			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/orlandos-nl/Citadel.git";
-			requirement = {
-				kind = exactVersion;
-				version = 0.12.1;
-			};
-		};
-/* End XCRemoteSwiftPackageReference section */
-
-/* Begin XCSwiftPackageProductDependency section */
-		09B8A425AB7709AFDA1BAE24 /* NIOSSH */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = 3B6B0E1D8897868BBAC0692B /* XCRemoteSwiftPackageReference "swift-nio-ssh" */;
-			productName = NIOSSH;
-		};
-		1EB5242642996E2916F0929E /* Citadel */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = DA622D74087C6B06ED4C5F57 /* XCRemoteSwiftPackageReference "Citadel" */;
-			productName = Citadel;
-		};
-		C6D142646118722FABC1C571 /* NIOCore */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = 2580CF28E79F1A7773A1391E /* XCRemoteSwiftPackageReference "swift-nio" */;
-			productName = NIOCore;
-		};
-/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 03B86ABABAF1BA591541E31A /* Project object */;
 }

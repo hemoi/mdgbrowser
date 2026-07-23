@@ -27,33 +27,291 @@ struct TerminalLauncherButton: View {
     }
 }
 
-struct MinimizedTerminalHandle: View {
+private enum TerminalPiPDock: String {
+    case free
+    case left
+    case right
+    case bottom
+}
+
+struct MinimizedTerminalPiP: View {
     @Environment(BrowserTheme.self) private var theme
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    @AppStorage("reto-terminal.pip-dock") private var storedDock = TerminalPiPDock.free.rawValue
+    @AppStorage("reto-terminal.pip-x") private var normalizedX = 0.72
+    @AppStorage("reto-terminal.pip-y") private var normalizedY = 0.72
+
+    @State private var dragOrigin: CGPoint?
+    @State private var transientCenter: CGPoint?
 
     let store: TerminalWorkspaceStore
 
+    private let cardSize = CGSize(width: 174, height: 104)
+    private let handleSize = CGSize(width: 52, height: 52)
+
     var body: some View {
+        GeometryReader { geometry in
+            let safeFrame = availableFrame(in: geometry)
+            let dock = TerminalPiPDock(rawValue: storedDock) ?? .free
+            let size = dock == .free ? cardSize : handleSize
+            let center = transientCenter ?? restingCenter(for: dock, in: safeFrame)
+
+            minimizedSurface(for: dock)
+                .frame(width: size.width, height: size.height)
+                .position(center)
+                .highPriorityGesture(dragGesture(dock: dock, safeFrame: safeFrame))
+                .animation(motion, value: storedDock)
+        }
+        .accessibilityElement(children: .contain)
+    }
+
+    @ViewBuilder
+    private func minimizedSurface(for dock: TerminalPiPDock) -> some View {
+        if dock == .free {
+            floatingCard
+        } else {
+            dockedHandle
+        }
+    }
+
+    private var floatingCard: some View {
+        ZStack(alignment: .topTrailing) {
+            Button {
+                store.presentTerminal()
+            } label: {
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(spacing: 7) {
+                        Image(systemName: "terminal.fill")
+                            .font(.system(size: 12, weight: .semibold))
+
+                        Text(store.selectedTab?.title ?? "SSH Terminal")
+                            .font(.system(size: 12, weight: .semibold, design: .rounded))
+                            .lineLimit(1)
+
+                        Spacer(minLength: 28)
+                    }
+
+                    HStack(spacing: 6) {
+                        Circle()
+                            .fill(connectionColor)
+                            .frame(width: 7, height: 7)
+
+                        Text(store.selectedTab?.state.label ?? "Ready")
+                            .font(.system(size: 10, weight: .medium, design: .rounded))
+                            .foregroundStyle(theme.mutedLabel)
+                            .lineLimit(1)
+                    }
+
+                    VStack(alignment: .leading, spacing: 5) {
+                        terminalPreviewLine(width: 116)
+                        terminalPreviewLine(width: 92)
+                        terminalPreviewLine(width: 126)
+                    }
+                }
+                .foregroundStyle(theme.label)
+                .padding(.horizontal, 13)
+                .padding(.vertical, 12)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                .contentShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Restore SSH terminal")
+            .accessibilityHint("Double tap to restore. Drag to reposition or dock at an edge.")
+            .accessibilityIdentifier("terminal.minimized.restore")
+            .accessibilityAction(named: "Dock terminal left") { setDock(.left) }
+            .accessibilityAction(named: "Dock terminal right") { setDock(.right) }
+            .accessibilityAction(named: "Dock terminal at bottom") { setDock(.bottom) }
+
+            Button {
+                store.closeSurface()
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundStyle(theme.label)
+                    .frame(width: 24, height: 24)
+                    .background(theme.raisedBackground.opacity(0.9), in: Circle())
+                    .frame(width: 44, height: 44)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Close SSH terminal")
+            .accessibilityIdentifier("terminal.minimized.close")
+        }
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .stroke(theme.border, lineWidth: 0.75)
+        }
+        .shadow(color: .black.opacity(0.22), radius: 16, y: 7)
+    }
+
+    private var dockedHandle: some View {
         Button {
             store.presentTerminal()
         } label: {
-            Capsule()
-                .fill(theme.mutedLabel.opacity(0.75))
-                .frame(width: 42, height: 5)
-                .frame(maxWidth: .infinity)
-                .frame(height: 44)
-                .contentShape(Rectangle())
+            ZStack(alignment: .bottomTrailing) {
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .fill(.regularMaterial)
+
+                Image(systemName: "terminal.fill")
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(theme.label)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+                Circle()
+                    .fill(connectionColor)
+                    .frame(width: 9, height: 9)
+                    .overlay(Circle().stroke(theme.background, lineWidth: 2))
+                    .padding(8)
+            }
+            .overlay {
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .stroke(theme.border, lineWidth: 0.75)
+            }
+            .shadow(color: .black.opacity(0.2), radius: 12, y: 5)
         }
         .buttonStyle(.plain)
-        .gesture(
-            DragGesture(minimumDistance: 6)
-                .onEnded { value in
-                    guard value.translation.height < -8 else { return }
-                    store.presentTerminal()
-                }
-        )
-        .accessibilityLabel("Expand terminal")
-        .accessibilityHint("Double tap or drag up to restore the terminal sheet.")
+        .accessibilityLabel("Restore docked SSH terminal")
+        .accessibilityHint("Double tap to restore. Drag away from the edge for a floating preview.")
         .accessibilityIdentifier("terminal.minimized-handle")
+        .accessibilityAction(named: "Show floating terminal preview") { setDock(.free) }
+        .accessibilityAction(named: "Close SSH terminal") { store.closeSurface() }
+    }
+
+    private func terminalPreviewLine(width: CGFloat) -> some View {
+        Capsule()
+            .fill(theme.mutedLabel.opacity(0.48))
+            .frame(width: width, height: 3)
+    }
+
+    private var connectionColor: SwiftUI.Color {
+        switch store.selectedTab?.state {
+        case .connecting, .suspended:
+            .orange
+        case .connected:
+            theme.tailnet
+        case .failed:
+            .red
+        case .disconnected, .none:
+            theme.mutedLabel
+        }
+    }
+
+    private var motion: Animation {
+        reduceMotion
+            ? .easeOut(duration: 0.12)
+            : .snappy(duration: 0.28, extraBounce: 0.06)
+    }
+
+    private func availableFrame(in geometry: GeometryProxy) -> CGRect {
+        let insets = geometry.safeAreaInsets
+        let margin: CGFloat = 10
+        return CGRect(
+            x: insets.leading + margin,
+            y: insets.top + margin,
+            width: max(1, geometry.size.width - insets.leading - insets.trailing - margin * 2),
+            height: max(1, geometry.size.height - insets.top - insets.bottom - margin * 2)
+        )
+    }
+
+    private func restingCenter(for dock: TerminalPiPDock, in frame: CGRect) -> CGPoint {
+        switch dock {
+        case .left:
+            CGPoint(
+                x: frame.minX + handleSize.width / 2,
+                y: frame.minY + frame.height * CGFloat(normalizedY)
+            )
+        case .right:
+            CGPoint(
+                x: frame.maxX - handleSize.width / 2,
+                y: frame.minY + frame.height * CGFloat(normalizedY)
+            )
+        case .bottom:
+            CGPoint(
+                x: frame.minX + frame.width * CGFloat(normalizedX),
+                y: frame.maxY - handleSize.height / 2
+            )
+        case .free:
+            clamp(
+                CGPoint(
+                    x: frame.minX + frame.width * CGFloat(normalizedX),
+                    y: frame.minY + frame.height * CGFloat(normalizedY)
+                ),
+                itemSize: cardSize,
+                in: frame
+            )
+        }
+    }
+
+    private func dragGesture(dock: TerminalPiPDock, safeFrame: CGRect) -> some Gesture {
+        DragGesture(minimumDistance: 6)
+            .onChanged { value in
+                if dragOrigin == nil {
+                    dragOrigin = restingCenter(for: dock, in: safeFrame)
+                }
+                guard let dragOrigin else { return }
+                let itemSize = dock == .free ? cardSize : handleSize
+                transientCenter = clamp(
+                    CGPoint(
+                        x: dragOrigin.x + value.translation.width,
+                        y: dragOrigin.y + value.translation.height
+                    ),
+                    itemSize: itemSize,
+                    in: safeFrame
+                )
+            }
+            .onEnded { value in
+                let origin = dragOrigin ?? restingCenter(for: dock, in: safeFrame)
+                let projected = CGPoint(
+                    x: origin.x + value.predictedEndTranslation.width,
+                    y: origin.y + value.predictedEndTranslation.height
+                )
+                let destination = dockTarget(for: projected, in: safeFrame)
+                let itemSize = destination == .free ? cardSize : handleSize
+                let finalCenter = clamp(projected, itemSize: itemSize, in: safeFrame)
+
+                normalizedX = Double(((finalCenter.x - safeFrame.minX) / safeFrame.width).clamped(to: 0...1))
+                normalizedY = Double(((finalCenter.y - safeFrame.minY) / safeFrame.height).clamped(to: 0...1))
+
+                setDock(destination)
+            }
+    }
+
+    private func setDock(_ destination: TerminalPiPDock) {
+        withAnimation(motion) {
+            storedDock = destination.rawValue
+            transientCenter = nil
+            dragOrigin = nil
+        }
+
+        if destination != .free {
+            RetoHaptics.terminalPiPDocked()
+        }
+    }
+
+    private func dockTarget(for center: CGPoint, in frame: CGRect) -> TerminalPiPDock {
+        let candidates: [(distance: CGFloat, dock: TerminalPiPDock)] = [
+            (abs(center.x - frame.minX), .left),
+            (abs(frame.maxX - center.x), .right),
+            (abs(frame.maxY - center.y), .bottom)
+        ]
+        guard let nearest = candidates.min(by: { $0.distance < $1.distance }), nearest.distance <= 58 else {
+            return .free
+        }
+        return nearest.dock
+    }
+
+    private func clamp(_ point: CGPoint, itemSize: CGSize, in frame: CGRect) -> CGPoint {
+        CGPoint(
+            x: min(max(point.x, frame.minX + itemSize.width / 2), frame.maxX - itemSize.width / 2),
+            y: min(max(point.y, frame.minY + itemSize.height / 2), frame.maxY - itemSize.height / 2)
+        )
+    }
+}
+
+private extension BinaryFloatingPoint {
+    func clamped(to range: ClosedRange<Self>) -> Self {
+        min(max(self, range.lowerBound), range.upperBound)
     }
 }
 
@@ -258,7 +516,7 @@ struct TerminalPanel: View {
             }
 
             ScrollView(.horizontal) {
-                HStack(spacing: 4) {
+                HStack(spacing: isPhoneSheet && store.tabs.count > 1 ? 3 : 4) {
                     ForEach(store.tabs) { tab in
                         terminalTab(tab)
                     }
@@ -314,6 +572,9 @@ struct TerminalPanel: View {
 
     private func terminalTab(_ tab: TerminalSession) -> some View {
         let selected = tab.id == store.selectedTab?.id
+        let dense = isPhoneSheet && store.tabs.count > 1
+        let visualHeight: CGFloat = dense ? 24 : 28
+        let tabWidth: CGFloat = isPhoneSheet ? (dense ? 106 : 138) : 170
         // SSH stays connected across a workspace switch (it's expensive to
         // rebuild, unlike a web view) — this only flags in the UI that the
         // tab's profile belongs elsewhere, it never closes the tab.
@@ -346,20 +607,25 @@ struct TerminalPanel: View {
             } label: {
                 Image(systemName: "xmark")
                     .font(.system(size: 8, weight: .bold))
-                    .frame(width: 22, height: 28)
+                    .frame(width: dense ? 20 : 22, height: 44)
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Close \(tab.title)")
         }
-        .font(.system(size: 11, weight: .semibold))
+        .font(.system(size: dense ? 10 : 11, weight: .semibold))
         .foregroundStyle(selected ? theme.background : theme.label)
-        .padding(.leading, 9)
-        .frame(width: isPhoneSheet ? 138 : 170, height: 28)
-        .background(selected ? theme.accent : theme.background)
-        .clipShape(RoundedRectangle(cornerRadius: 7))
+        .padding(.leading, dense ? 7 : 9)
+        .frame(width: tabWidth, height: 44)
+        .background {
+            RoundedRectangle(cornerRadius: dense ? 6 : 7, style: .continuous)
+                .fill(selected ? theme.accent : theme.background)
+                .frame(height: visualHeight)
+        }
         .overlay {
             if !selected {
-                RoundedRectangle(cornerRadius: 7).stroke(theme.border, lineWidth: 0.75)
+                RoundedRectangle(cornerRadius: dense ? 6 : 7, style: .continuous)
+                    .stroke(theme.border, lineWidth: 0.75)
+                    .frame(height: visualHeight)
             }
         }
         .accessibilityElement(children: .contain)

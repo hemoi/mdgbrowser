@@ -3,6 +3,65 @@ import Observation
 import UIKit
 import WebKit
 
+enum BrowserNavigationDisposition: Equatable {
+    case allowInWebView
+    case openExternal
+    case block(reason: String)
+}
+
+enum BrowserNavigationSecurityPolicy {
+    static let webViewSchemes: Set<String> = [
+        "http", "https", "file", "about", "data", "blob", "reto-start"
+    ]
+    static let localOnlyTopLevelSchemes: Set<String> = ["file", "data"]
+    static let allowedExternalSchemes: Set<String> = [
+        "mailto", "tel", "sms", "facetime", "facetime-audio", "maps"
+    ]
+
+    static func disposition(
+        for url: URL,
+        sourceURL: URL?,
+        navigationType: WKNavigationType,
+        targetFrameIsMainFrame: Bool,
+        canOpenExternalURL: Bool
+    ) -> BrowserNavigationDisposition {
+        let scheme = url.scheme?.lowercased() ?? ""
+        if !webViewSchemes.contains(scheme) {
+            guard allowedExternalSchemes.contains(scheme),
+                  navigationType == .linkActivated,
+                  targetFrameIsMainFrame,
+                  canOpenExternalURL else {
+                return .block(reason: "Blocked a website from opening an external app without a direct tap.")
+            }
+            return .openExternal
+        }
+        if targetFrameIsMainFrame,
+           localOnlyTopLevelSchemes.contains(scheme),
+           let sourceScheme = sourceURL?.scheme?.lowercased(),
+           sourceScheme == "http" || sourceScheme == "https" {
+            return .block(reason: "Blocked a remote page from replacing the tab with local or inline content.")
+        }
+        return .allowInWebView
+    }
+}
+
+enum BrowserHTTPAuthenticationPolicy {
+    static let supportedMethods: Set<String> = [
+        NSURLAuthenticationMethodHTTPBasic,
+        NSURLAuthenticationMethodHTTPDigest,
+        NSURLAuthenticationMethodNTLM,
+        NSURLAuthenticationMethodNegotiate,
+    ]
+
+    static func supports(_ protectionSpace: URLProtectionSpace) -> Bool {
+        !protectionSpace.isProxy() && supportedMethods.contains(protectionSpace.authenticationMethod)
+    }
+
+    static func canSave(_ protectionSpace: URLProtectionSpace, isPrivate: Bool) -> Bool {
+        !isPrivate && protectionSpace.receivesCredentialSecurely && supports(protectionSpace)
+    }
+}
+
 @MainActor
 @Observable
 final class BrowserSession: NSObject, WKNavigationDelegate, WKUIDelegate {
@@ -31,11 +90,15 @@ final class BrowserSession: NSObject, WKNavigationDelegate, WKUIDelegate {
     @ObservationIgnored private let contentBlocker: BrowserContentBlocker
     @ObservationIgnored private let downloadManager: BrowserDownloadManager
     @ObservationIgnored private let settingsProvider: (URL?) -> SiteSettingsRecord
+    @ObservationIgnored private let credentialStorage: URLCredentialStorage
+    @ObservationIgnored private let isPrivateWorkspace: Bool
     @ObservationIgnored private let newWindowHandler: (URL?, WKWebViewConfiguration) -> WKWebView?
     @ObservationIgnored private let closeHandler: () -> Void
     @ObservationIgnored private var blockerInstalled = false
     @ObservationIgnored private var autoScrollTask: Task<Void, Never>?
     @ObservationIgnored private var pageColorObservations: [NSKeyValueObservation] = []
+    @ObservationIgnored private var developerInstrumentationEnabled = false
+    @ObservationIgnored private var recentProcessTerminations: [Date] = []
 
     init(
         workspaceID: UUID,
@@ -43,6 +106,9 @@ final class BrowserSession: NSObject, WKNavigationDelegate, WKUIDelegate {
         contentBlocker: BrowserContentBlocker,
         downloadManager: BrowserDownloadManager,
         settingsProvider: @escaping (URL?) -> SiteSettingsRecord,
+        credentialStorage: URLCredentialStorage = .shared,
+        isPrivateWorkspace: Bool = false,
+        websiteDataStore: WKWebsiteDataStore? = nil,
         webViewConfiguration: WKWebViewConfiguration? = nil,
         startsLoaded: Bool = false,
         newWindowHandler: @escaping (URL?, WKWebViewConfiguration) -> WKWebView?,
@@ -53,6 +119,8 @@ final class BrowserSession: NSObject, WKNavigationDelegate, WKUIDelegate {
         self.contentBlocker = contentBlocker
         self.downloadManager = downloadManager
         self.settingsProvider = settingsProvider
+        self.credentialStorage = credentialStorage
+        self.isPrivateWorkspace = isPrivateWorkspace
         self.newWindowHandler = newWindowHandler
         self.closeHandler = closeHandler
         hasLoaded = startsLoaded
@@ -60,27 +128,19 @@ final class BrowserSession: NSObject, WKNavigationDelegate, WKUIDelegate {
 
         let configuration = webViewConfiguration ?? WKWebViewConfiguration()
         if webViewConfiguration == nil {
-            configuration.websiteDataStore = WKWebsiteDataStore(forIdentifier: workspaceID)
+            configuration.websiteDataStore = websiteDataStore ?? WKWebsiteDataStore(forIdentifier: workspaceID)
         }
         configuration.upgradeKnownHostsToHTTPS = true
         configuration.allowsInlineMediaPlayback = true
         configuration.allowsPictureInPictureMediaPlayback = true
+        configuration.preferences.isFraudulentWebsiteWarningEnabled = true
+        configuration.preferences.javaScriptCanOpenWindowsAutomatically = false
 
         let initialURL = BrowserURL.resolve(record.urlString)
         let initialSettings = settingsProvider(initialURL)
         configuration.defaultWebpagePreferences.allowsContentJavaScript = initialSettings.javaScriptEnabled
         configuration.defaultWebpagePreferences.preferredContentMode = initialSettings.contentMode.webKitValue
         configuration.mediaTypesRequiringUserActionForPlayback = initialSettings.autoplayEnabled ? [] : .all
-
-        if webViewConfiguration == nil {
-            configuration.userContentController.addUserScript(
-                WKUserScript(
-                    source: Self.developerInstrumentationScript,
-                    injectionTime: .atDocumentStart,
-                    forMainFrameOnly: true
-                )
-            )
-        }
 
         if let ruleList = contentBlocker.ruleList {
             // A popup configuration can inherit the opener's content controller.
@@ -98,6 +158,7 @@ final class BrowserSession: NSObject, WKNavigationDelegate, WKUIDelegate {
         webView.navigationDelegate = self
         webView.uiDelegate = self
         webView.allowsBackForwardNavigationGestures = true
+        webView.isInspectable = false
         applyVisualSettings(for: initialURL)
         observePageColors()
     }
@@ -231,6 +292,19 @@ final class BrowserSession: NSObject, WKNavigationDelegate, WKUIDelegate {
         return json
     }
 
+    func enableDeveloperInstrumentation() async {
+        guard !developerInstrumentationEnabled else { return }
+        developerInstrumentationEnabled = true
+        webView.configuration.userContentController.addUserScript(
+            WKUserScript(
+                source: Self.developerInstrumentationScript,
+                injectionTime: .atDocumentStart,
+                forMainFrameOnly: true
+            )
+        )
+        _ = try? await webView.evaluateJavaScript(Self.developerInstrumentationScript)
+    }
+
     func runDeveloperScript(_ script: String) async throws -> String {
         guard let result = try await webView.evaluateJavaScript(script) else { return "undefined" }
         if let string = result as? String { return string }
@@ -281,12 +355,26 @@ final class BrowserSession: NSObject, WKNavigationDelegate, WKUIDelegate {
         decisionHandler: @escaping @MainActor @Sendable (WKNavigationActionPolicy, WKWebpagePreferences) -> Void
     ) {
         let url = navigationAction.request.url
-        if let url,
-           let scheme = url.scheme?.lowercased(),
-           !Self.webViewSchemes.contains(scheme) {
-            UIApplication.shared.open(url)
-            decisionHandler(.cancel, preferences)
-            return
+        if let url {
+            let disposition = BrowserNavigationSecurityPolicy.disposition(
+                for: url,
+                sourceURL: navigationAction.sourceFrame.request.url,
+                navigationType: navigationAction.navigationType,
+                targetFrameIsMainFrame: navigationAction.targetFrame?.isMainFrame != false,
+                canOpenExternalURL: UIApplication.shared.canOpenURL(url)
+            )
+            switch disposition {
+            case .allowInWebView:
+                break
+            case .openExternal:
+                UIApplication.shared.open(url)
+                decisionHandler(.cancel, preferences)
+                return
+            case .block(let reason):
+                errorMessage = reason
+                decisionHandler(.cancel, preferences)
+                return
+            }
         }
         let settings = settingsProvider(url)
         preferences.allowsContentJavaScript = settings.javaScriptEnabled
@@ -338,7 +426,111 @@ final class BrowserSession: NSObject, WKNavigationDelegate, WKUIDelegate {
     }
 
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+        let cutoff = Date().addingTimeInterval(-60)
+        recentProcessTerminations.removeAll(where: { $0 < cutoff })
+        recentProcessTerminations.append(.now)
+        guard recentProcessTerminations.count <= 2 else {
+            isLoading = false
+            errorMessage = "This page’s web process stopped repeatedly. Reload it manually when you’re ready."
+            return
+        }
         webView.reload()
+    }
+
+    func webView(
+        _ webView: WKWebView,
+        didReceive challenge: URLAuthenticationChallenge,
+        completionHandler: @escaping @MainActor @Sendable (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
+    ) {
+        let protectionSpace = challenge.protectionSpace
+        guard BrowserHTTPAuthenticationPolicy.supports(protectionSpace) else {
+            completionHandler(.performDefaultHandling, nil)
+            return
+        }
+
+        if challenge.previousFailureCount == 0,
+           !isPrivateWorkspace,
+           let saved = credentialStorage.defaultCredential(for: protectionSpace) {
+            completionHandler(.useCredential, saved)
+            return
+        }
+
+        if challenge.previousFailureCount > 0,
+           let failed = challenge.proposedCredential,
+           failed.persistence == .permanent || failed.persistence == .synchronizable {
+            credentialStorage.remove(failed, for: protectionSpace)
+        }
+
+        guard let presenter = Self.presentingViewController(for: webView) else {
+            completionHandler(.cancelAuthenticationChallenge, nil)
+            return
+        }
+
+        let host = protectionSpace.host
+        let realm = protectionSpace.realm?.trimmingCharacters(in: .whitespacesAndNewlines)
+        var messageParts: [String] = []
+        if let realm, !realm.isEmpty { messageParts.append(realm) }
+        if !protectionSpace.receivesCredentialSecurely {
+            messageParts.append("This connection cannot protect a saved password. Sign in only if you trust this network.")
+        } else if challenge.previousFailureCount > 0 {
+            messageParts.append("The previous username or password was rejected.")
+        }
+
+        let alert = UIAlertController(
+            title: "Sign in to \(host)",
+            message: messageParts.joined(separator: "\n\n"),
+            preferredStyle: .alert
+        )
+        alert.addTextField { field in
+            field.placeholder = "Username"
+            field.textContentType = .username
+            field.autocapitalizationType = .none
+            field.autocorrectionType = .no
+            field.text = challenge.proposedCredential?.user
+        }
+        alert.addTextField { field in
+            field.placeholder = "Password"
+            field.textContentType = .password
+            field.isSecureTextEntry = true
+        }
+        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel) { _ in
+            completionHandler(.cancelAuthenticationChallenge, nil)
+        })
+        alert.addAction(UIAlertAction(title: "Sign In Once", style: .default) { [weak alert] _ in
+            guard let fields = alert?.textFields,
+                  let username = fields.first?.text, !username.isEmpty,
+                  let password = fields.last?.text, !password.isEmpty else {
+                completionHandler(.cancelAuthenticationChallenge, nil)
+                return
+            }
+            completionHandler(
+                .useCredential,
+                URLCredential(user: username, password: password, persistence: .none)
+            )
+        })
+        if BrowserHTTPAuthenticationPolicy.canSave(protectionSpace, isPrivate: isPrivateWorkspace) {
+            alert.addAction(UIAlertAction(title: "Sign In & Save", style: .default) { [weak self, weak alert] _ in
+                guard let self,
+                      let fields = alert?.textFields,
+                      let username = fields.first?.text, !username.isEmpty,
+                      let password = fields.last?.text, !password.isEmpty else {
+                    completionHandler(.cancelAuthenticationChallenge, nil)
+                    return
+                }
+                let credential = URLCredential(user: username, password: password, persistence: .permanent)
+                credentialStorage.setDefaultCredential(credential, for: protectionSpace)
+                completionHandler(.useCredential, credential)
+            })
+        }
+        presenter.present(alert, animated: true)
+    }
+
+    func webView(
+        _ webView: WKWebView,
+        authenticationChallenge challenge: URLAuthenticationChallenge,
+        shouldAllowDeprecatedTLS decisionHandler: @escaping @MainActor @Sendable (Bool) -> Void
+    ) {
+        decisionHandler(false)
     }
 
     func webView(
@@ -445,6 +637,18 @@ final class BrowserSession: NSObject, WKNavigationDelegate, WKUIDelegate {
         decisionHandler(permission.webKitValue)
     }
 
+    func webView(
+        _ webView: WKWebView,
+        requestDeviceOrientationAndMotionPermissionFor origin: WKSecurityOrigin,
+        initiatedByFrame frame: WKFrameInfo,
+        decisionHandler: @escaping @MainActor @Sendable (WKPermissionDecision) -> Void
+    ) {
+        var components = URLComponents()
+        components.scheme = "https"
+        components.host = origin.host
+        decisionHandler(settingsProvider(components.url).motionPermission.webKitValue)
+    }
+
     private func applySiteSettings(for url: URL?) {
         let settings = settingsProvider(url)
         applyVisualSettings(for: url)
@@ -480,10 +684,6 @@ final class BrowserSession: NSObject, WKNavigationDelegate, WKUIDelegate {
         hasOnlySecureContent = webView.hasOnlySecureContent
         if let currentURL { address = currentURL.absoluteString }
     }
-
-    private static let webViewSchemes: Set<String> = [
-        "http", "https", "file", "about", "data", "blob", "reto-start"
-    ]
 
     private static func dialogTitle(for frame: WKFrameInfo) -> String {
         frame.request.url?.host().map { "\($0) says" } ?? "This webpage says"

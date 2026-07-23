@@ -5,15 +5,20 @@ import UIKit
 /// `BrowserTheme.swift`) because another workstream owns that file
 /// concurrently.
 enum GlassMetrics {
-    /// A continuous radius close to the iPhone display silhouette. Using the
-    /// same value on every corner keeps the expanded island as one object.
-    static let surfaceCornerRadius: CGFloat = 40
+    /// Upper bound for the expanded shell's continuous radius. The actual
+    /// value is adjusted by IslandChrome using the device's top safe-area
+    /// inset so the shell follows the phone's own corner language.
+    static let surfaceCornerRadius: CGFloat = 48
     /// Keeps the expanded shell's top edge visible below the screen edge
     /// while the inline controls remain aligned with the hardware island.
-    static let surfaceTopInset: CGFloat = 8
+    static let surfaceTopInset: CGFloat = 10
     /// Corner radius of individual controls inside the surface (the address
     /// field, icon buttons).
-    static let controlCornerRadius: CGFloat = 20
+    static let controlCornerRadius: CGFloat = 17
+    /// The address field reads lighter and tighter than the outer island, but
+    /// its wrapper remains 44pt tall for a comfortable touch target.
+    static let addressVisualHeight: CGFloat = 34
+    static let addressHitHeight: CGFloat = 44
     static let hairline: CGFloat = 0.75
 }
 
@@ -27,6 +32,10 @@ enum RetoHaptics {
 
     static func connectionStarted() {
         UIImpactFeedbackGenerator(style: .soft).impactOccurred(intensity: 0.65)
+    }
+
+    static func terminalPiPDocked() {
+        UIImpactFeedbackGenerator(style: .rigid).impactOccurred(intensity: 0.5)
     }
 
     static func success() {
