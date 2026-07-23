@@ -178,7 +178,6 @@ final class WorkspaceBrowserStore {
     func prepareWebFeatures() async {
         await contentBlocker.prepare()
         for session in sessions.values { session.applyCurrentSiteSettings(reload: false) }
-        refreshServiceStatuses()
     }
 
     func setActivePane(_ pane: BrowserPane) {
@@ -696,7 +695,13 @@ final class WorkspaceBrowserStore {
         sidebarVisible = false
     }
 
-    func refreshServiceStatuses() { statusMonitor.refresh(bookmarks) }
+    /// Only check services visible in the active workspace. Hidden workspace
+    /// bookmarks should not wake the radio in the background of normal use.
+    func refreshServiceStatuses() { statusMonitor.refresh(visibleBookmarks) }
+
+    func stopBackgroundActivity() {
+        statusMonitor.stop()
+    }
 
     func addGroup(name: String) {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)

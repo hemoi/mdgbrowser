@@ -168,6 +168,27 @@ private enum LibSSH2Primitives {
         }
     }
 
+    /// Wait for libssh2's requested socket direction rather than retrying an
+    /// EAGAIN result in a tight loop.
+    static func waitForSocket(
+        session: OpaquePointer,
+        descriptor: Int32,
+        timeoutMilliseconds: Int32 = 20_000
+    ) throws {
+        let directions = libssh2_session_block_directions(session)
+        var events = Int16(0)
+        if directions & Int32(LIBSSH2_SESSION_BLOCK_INBOUND) != 0 { events |= Int16(POLLIN) }
+        if directions & Int32(LIBSSH2_SESSION_BLOCK_OUTBOUND) != 0 { events |= Int16(POLLOUT) }
+        if events == 0 { events = Int16(POLLIN | POLLOUT) }
+
+        var descriptorState = pollfd(fd: descriptor, events: events, revents: 0)
+        let result = poll(&descriptorState, 1, timeoutMilliseconds)
+        guard result > 0,
+              descriptorState.revents & Int16(POLLERR | POLLNVAL) == 0 else {
+            throw LibSSH2ConnectionError.transportFailed
+        }
+    }
+
     static func hostKeyFingerprint(session: OpaquePointer) throws -> String {
         guard let hash = libssh2_hostkey_hash(session, Int32(LIBSSH2_HOSTKEY_HASH_SHA256)) else {
             throw LibSSH2ConnectionError.hostKeyUnavailable
@@ -258,6 +279,8 @@ final class LibSSH2ConnectionEngine: SSHConnectionEngineProtocol, @unchecked Sen
     private var stopped = false
     private var pendingWrites: [[UInt8]] = []
     private var pendingSize: TerminalSize?
+    private var wakeReadDescriptor: Int32 = -1
+    private var wakeWriteDescriptor: Int32 = -1
 
     func run(
         profile: SSHProfile,
@@ -293,9 +316,13 @@ final class LibSSH2ConnectionEngine: SSHConnectionEngineProtocol, @unchecked Sen
 
     private func enqueue(_ bytes: [UInt8]) throws {
         stateLock.lock()
-        defer { stateLock.unlock() }
-        guard ready, !stopped else { throw LibSSH2ConnectionError.notConnected }
+        guard ready, !stopped else {
+            stateLock.unlock()
+            throw LibSSH2ConnectionError.notConnected
+        }
         pendingWrites.append(bytes)
+        signal(descriptor: wakeWriteDescriptor)
+        stateLock.unlock()
     }
 
     func resize(cols: Int, rows: Int, pixelWidth: Int, pixelHeight: Int) async {
@@ -314,6 +341,7 @@ final class LibSSH2ConnectionEngine: SSHConnectionEngineProtocol, @unchecked Sen
         stateLock.lock()
         if ready, !stopped {
             pendingSize = size
+            signal(descriptor: wakeWriteDescriptor)
         }
         stateLock.unlock()
     }
@@ -342,8 +370,13 @@ final class LibSSH2ConnectionEngine: SSHConnectionEngineProtocol, @unchecked Sen
         }
 
         var channel: OpaquePointer?
+        var wakeDescriptors = [Int32](repeating: -1, count: 2)
         defer {
             markNotReady()
+            clearWakeDescriptors(read: wakeDescriptors[0], write: wakeDescriptors[1])
+            for descriptor in wakeDescriptors where descriptor >= 0 {
+                Darwin.close(descriptor)
+            }
             keyboardSecret.set(nil)
             if let channel {
                 _ = libssh2_channel_close(channel)
@@ -418,10 +451,22 @@ final class LibSSH2ConnectionEngine: SSHConnectionEngineProtocol, @unchecked Sen
 
         try LibSSH2Primitives.setNonBlocking(socket)
         libssh2_session_set_blocking(session, 0)
+        guard Darwin.socketpair(AF_UNIX, SOCK_STREAM, 0, &wakeDescriptors) == 0 else {
+            throw LibSSH2ConnectionError.transportFailed
+        }
+        try LibSSH2Primitives.setNonBlocking(wakeDescriptors[0])
+        try LibSSH2Primitives.setNonBlocking(wakeDescriptors[1])
+        setWakeDescriptors(read: wakeDescriptors[0], write: wakeDescriptors[1])
         markReady()
         await onReady()
 
-        try await ioLoop(channel: openedChannel, onOutput: onOutput)
+        try await ioLoop(
+            session: session,
+            socket: socket,
+            wakeReadDescriptor: wakeDescriptors[0],
+            channel: openedChannel,
+            onOutput: onOutput
+        )
     }
 
     private func writeBlocking(_ bytes: [UInt8], channel: OpaquePointer) throws {
@@ -438,6 +483,9 @@ final class LibSSH2ConnectionEngine: SSHConnectionEngineProtocol, @unchecked Sen
     }
 
     private func ioLoop(
+        session: OpaquePointer,
+        socket: Int32,
+        wakeReadDescriptor: Int32,
         channel: OpaquePointer,
         onOutput: @escaping @Sendable ([UInt8]) async -> Void
     ) async throws {
@@ -505,7 +553,12 @@ final class LibSSH2ConnectionEngine: SSHConnectionEngineProtocol, @unchecked Sen
 
             if libssh2_channel_eof(channel) != 0 { return }
             if !didWork {
-                try await Task.sleep(for: .milliseconds(4))
+                try waitForIO(
+                    session: session,
+                    socket: socket,
+                    wakeReadDescriptor: wakeReadDescriptor,
+                    wantsWrite: !activeWrite.isEmpty || hasPendingIO
+                )
             }
         }
 
@@ -521,6 +574,8 @@ final class LibSSH2ConnectionEngine: SSHConnectionEngineProtocol, @unchecked Sen
     private func resetForConnection() {
         stateLock.lock()
         socketDescriptor = -1
+        wakeReadDescriptor = -1
+        wakeWriteDescriptor = -1
         ready = false
         stopped = false
         pendingWrites.removeAll(keepingCapacity: true)
@@ -560,10 +615,80 @@ final class LibSSH2ConnectionEngine: SSHConnectionEngineProtocol, @unchecked Sen
         stopped = true
         ready = false
         let descriptor = socketDescriptor
+        signal(descriptor: wakeWriteDescriptor)
         stateLock.unlock()
         if descriptor >= 0 {
             Darwin.shutdown(descriptor, SHUT_RDWR)
         }
+    }
+
+    private var hasPendingIO: Bool {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return pendingSize != nil || !pendingWrites.isEmpty
+    }
+
+    private func setWakeDescriptors(read: Int32, write: Int32) {
+        stateLock.lock()
+        wakeReadDescriptor = read
+        wakeWriteDescriptor = write
+        stateLock.unlock()
+    }
+
+    private func clearWakeDescriptors(read: Int32, write: Int32) {
+        stateLock.lock()
+        if wakeReadDescriptor == read { wakeReadDescriptor = -1 }
+        if wakeWriteDescriptor == write { wakeWriteDescriptor = -1 }
+        stateLock.unlock()
+    }
+
+    private func signal(descriptor: Int32) {
+        guard descriptor >= 0 else { return }
+        var byte: UInt8 = 1
+        _ = Darwin.write(descriptor, &byte, 1)
+    }
+
+    /// Blocks the detached SSH worker until remote data arrives or local
+    /// input/resize work signals the wake socket. The long timeout is only a
+    /// cancellation safety net; normal traffic wakes immediately.
+    private func waitForIO(
+        session: OpaquePointer,
+        socket: Int32,
+        wakeReadDescriptor: Int32,
+        wantsWrite: Bool
+    ) throws {
+        let directions = libssh2_session_block_directions(session)
+        var socketEvents = Int16(POLLIN)
+        if wantsWrite || directions & Int32(LIBSSH2_SESSION_BLOCK_OUTBOUND) != 0 {
+            socketEvents |= Int16(POLLOUT)
+        }
+
+        var descriptors = [
+            pollfd(fd: socket, events: socketEvents, revents: 0),
+            pollfd(fd: wakeReadDescriptor, events: Int16(POLLIN), revents: 0),
+        ]
+        let result = descriptors.withUnsafeMutableBufferPointer { buffer in
+            poll(buffer.baseAddress, nfds_t(buffer.count), 30_000)
+        }
+        if result < 0 {
+            if errno == EINTR { return }
+            throw LibSSH2ConnectionError.transportFailed
+        }
+        guard result > 0 else { return }
+
+        if descriptors[1].revents & Int16(POLLIN) != 0 {
+            drain(descriptor: wakeReadDescriptor)
+        }
+        if descriptors[0].revents & Int16(POLLERR | POLLNVAL) != 0 {
+            throw LibSSH2ConnectionError.transportFailed
+        }
+    }
+
+    private func drain(descriptor: Int32) {
+        var bytes = [UInt8](repeating: 0, count: 64)
+        while bytes.withUnsafeMutableBytes({ buffer in
+            Darwin.read(descriptor, buffer.baseAddress, buffer.count)
+        }) > 0 {}
     }
 
     private func takePendingWrite() -> [UInt8]? {
@@ -689,7 +814,7 @@ final class LibSSH2OneShotCommandRunner: SSHOneShotCommandRunning, @unchecked Se
                 if count > 0 {
                     output.append(contentsOf: readBuffer.prefix(count).map(UInt8.init(bitPattern:)))
                 } else if count == Int(LIBSSH2_ERROR_EAGAIN) {
-                    continue
+                    try LibSSH2Primitives.waitForSocket(session: session, descriptor: socket)
                 } else if count < 0 {
                     throw LibSSH2ConnectionError.transportFailed
                 } else {

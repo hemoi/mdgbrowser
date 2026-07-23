@@ -1,6 +1,11 @@
 import SwiftUI
 
 struct BrowserView: View {
+    /// Service badges are advisory, not a live monitoring dashboard. Keeping
+    /// the radio awake every minute was disproportionate on a phone; manual
+    /// refresh remains available from the sidebar and command palette.
+    private static let serviceRefreshInterval: Duration = .seconds(300)
+
     @Environment(BrowserTheme.self) private var theme
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Environment(\.verticalSizeClass) private var verticalSizeClass
@@ -220,18 +225,26 @@ struct BrowserView: View {
             terminalStore.resumePortForwards()
             handlePendingIntent()
             await store.prepareWebFeatures()
-            await aiStore.prepareWebFeatures()
+        }
+        .task(id: scenePhase) {
+            // Binding this loop to scenePhase guarantees SwiftUI cancels it
+            // as soon as the app leaves the foreground; it cannot wake the
+            // radio later through a stale captured phase value.
+            guard scenePhase == .active else { return }
             while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(60))
-                if !Task.isCancelled, scenePhase == .active { store.refreshServiceStatuses() }
+                try? await Task.sleep(for: Self.serviceRefreshInterval)
+                if !Task.isCancelled { store.refreshServiceStatuses() }
             }
         }
         .onChange(of: intentRouter.request) { handlePendingIntent() }
-        .onChange(of: scenePhase) {
+        .onChange(of: scenePhase, initial: true) {
             terminalStore.handleScenePhase(scenePhase)
             if scenePhase == .background {
+                store.stopBackgroundActivity()
                 store.hibernateInactiveTabs()
                 store.autoArchiveStaleTabs()
+            } else if scenePhase == .active {
+                store.refreshServiceStatuses()
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.didReceiveMemoryWarningNotification)) { _ in

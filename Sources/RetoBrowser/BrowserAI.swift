@@ -109,10 +109,6 @@ final class BrowserAIStore {
         return session
     }
 
-    func prepareWebFeatures() async {
-        await contentBlocker.prepare()
-    }
-
     func present() {
         isPresented = true
         let session = session
