@@ -213,6 +213,9 @@ struct TerminalPanel: View {
             case .tmuxSessions:
                 TmuxSessionBrowserSheet(store: store)
                     .environment(theme)
+            case .settings:
+                TerminalSettingsSheet(store: store)
+                    .environment(theme)
             }
         }
         .alert(item: $store.pendingHostTrust) { request in
@@ -269,9 +272,10 @@ struct TerminalPanel: View {
                 .accessibilityIdentifier("terminal.tmux-sessions")
             }
 
-            CompactIconButton(systemName: "gearshape", accessibilityLabel: "Manage SSH profiles") {
-                store.presentedSheet = .profiles
+            CompactIconButton(systemName: "gearshape", accessibilityLabel: "Terminal settings") {
+                store.presentedSheet = .settings
             }
+            .accessibilityIdentifier("terminal.settings")
 
             if isPhoneSheet, store.selectedTab != nil {
                 CompactIconButton(
@@ -784,6 +788,21 @@ struct SSHProfileEditor: View {
                 }
 
                 Section {
+                    Picker("Emulation", selection: $profile.terminalEmulation) {
+                        ForEach(TerminalEmulation.allCases) { emulation in
+                            Text(emulation.label).tag(emulation)
+                        }
+                    }
+
+                    LabeledContent("Reported TERM", value: profile.resolvedTerminalType)
+                        .font(.system(.body, design: .monospaced))
+                } header: {
+                    Text("Terminal Compatibility")
+                } footer: {
+                    Text("Automatic reports xterm-256color. tmux chooses its own inner TERM, while the remote shell keeps using its startup files, prompt, and ANSI colors.")
+                }
+
+                Section {
                     Picker("Group", selection: $profile.groupID) {
                         Text("None").tag(UUID?.none)
                         ForEach(store.availableGroups) { group in
@@ -883,5 +902,278 @@ struct SSHProfileEditor: View {
         } message: {
             Text(keyImportError ?? "Unknown error")
         }
+    }
+}
+
+struct TerminalSettingsSheet: View {
+    @Environment(BrowserTheme.self) private var browserTheme
+    @Environment(\.dismiss) private var dismiss
+
+    let store: TerminalWorkspaceStore
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Appearance") {
+                    Picker("Font", selection: preferenceBinding(\.font)) {
+                        ForEach(TerminalFontChoice.allCases) { font in
+                            Text(font.label).tag(font)
+                        }
+                    }
+
+                    VStack(alignment: .leading, spacing: 10) {
+                        HStack {
+                            Label("Font Size", systemImage: "textformat.size")
+                            Spacer()
+                            Text("\(Int(store.terminalPreferences.fontSize)) pt")
+                                .foregroundStyle(.secondary)
+                                .monospacedDigit()
+                        }
+
+                        Slider(
+                            value: preferenceBinding(\.fontSize),
+                            in: 10...28,
+                            step: 1
+                        )
+                        .accessibilityLabel("Terminal font size")
+                    }
+                    .padding(.vertical, 4)
+
+                    terminalThemePicker
+                }
+
+                Section {
+                    NavigationLink {
+                        TerminalKeyboardCustomizationView(store: store)
+                    } label: {
+                        VStack(alignment: .leading, spacing: 10) {
+                            Label("Customize Keyboard", systemImage: "keyboard")
+                            TerminalHotkeyPreview(groups: store.terminalPreferences.hotkeyGroups)
+                        }
+                        .padding(.vertical, 6)
+                    }
+                    .accessibilityIdentifier("terminal.settings.keyboard")
+                } header: {
+                    Text("Hotkeys")
+                } footer: {
+                    Text("Each card is a four-key group. Reordering cards changes the terminal keyboard in the same sequence.")
+                }
+
+                Section("Connections") {
+                    NavigationLink {
+                        SSHProfilesSheet(store: store)
+                            .environment(browserTheme)
+                    } label: {
+                        Label("SSH Profiles", systemImage: "server.rack")
+                    }
+
+                    LabeledContent("Remote colors", value: "ANSI / True Color")
+                }
+
+                Section {
+                    LabeledContent("D2Coding", value: "SIL Open Font License 1.1")
+                } footer: {
+                    Text("D2Coding is bundled with its license. A remote computer cannot provide its local font to iOS; remote shell themes and ANSI colors are still rendered.")
+                }
+            }
+            .navigationTitle("Terminal Settings")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
+        }
+        .presentationDetents([.large])
+    }
+
+    private var terminalThemePicker: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Label("Theme", systemImage: "circle.lefthalf.filled")
+
+            ScrollView(.horizontal) {
+                HStack(spacing: 10) {
+                    ForEach(TerminalThemePreset.allCases) { preset in
+                        Button {
+                            var preferences = store.terminalPreferences
+                            preferences.theme = preset
+                            withAnimation(.easeInOut(duration: 0.2)) {
+                                store.updateTerminalPreferences(preferences)
+                            }
+                        } label: {
+                            VStack(alignment: .leading, spacing: 8) {
+                                HStack(spacing: 3) {
+                                    ForEach(Array(preset.previewHexes.enumerated()), id: \.offset) { _, hex in
+                                        Circle()
+                                            .fill(Color(uiColor: UIColor(terminalHex: hex)))
+                                            .frame(width: 12, height: 12)
+                                    }
+                                }
+                                Text(preset.label)
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(Color(uiColor: preset.foregroundColor))
+                            }
+                            .frame(width: 92, alignment: .leading)
+                            .padding(10)
+                            .background(
+                                Color(uiColor: preset.backgroundColor),
+                                in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            )
+                            .overlay {
+                                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                    .stroke(
+                                        store.terminalPreferences.theme == preset ? Color.accentColor : Color.secondary.opacity(0.25),
+                                        lineWidth: store.terminalPreferences.theme == preset ? 2 : 1
+                                    )
+                            }
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("\(preset.label) terminal theme")
+                        .accessibilityAddTraits(store.terminalPreferences.theme == preset ? .isSelected : [])
+                    }
+                }
+                .padding(.vertical, 2)
+            }
+            .scrollIndicators(.hidden)
+        }
+        .padding(.vertical, 4)
+    }
+
+    private func preferenceBinding<Value>(_ keyPath: WritableKeyPath<TerminalPreferences, Value>) -> Binding<Value> {
+        Binding(
+            get: { store.terminalPreferences[keyPath: keyPath] },
+            set: { newValue in
+                var preferences = store.terminalPreferences
+                preferences[keyPath: keyPath] = newValue
+                store.updateTerminalPreferences(preferences)
+            }
+        )
+    }
+}
+
+private struct TerminalHotkeyPreview: View {
+    let groups: [TerminalHotkeyGroup]
+
+    var body: some View {
+        ScrollView(.horizontal) {
+            HStack(spacing: 10) {
+                ForEach(groups) { group in
+                    HStack(spacing: 4) {
+                        ForEach(group.keys) { key in
+                            Text(key.shortLabel)
+                                .font(.system(size: 11, weight: .semibold, design: .rounded))
+                                .foregroundStyle(.primary)
+                                .frame(minWidth: 30, minHeight: 30)
+                                .padding(.horizontal, 3)
+                                .background(.tertiary, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                        }
+                    }
+                }
+            }
+        }
+        .scrollIndicators(.hidden)
+        .allowsHitTesting(false)
+    }
+}
+
+struct TerminalKeyboardCustomizationView: View {
+    @State private var groups: [TerminalHotkeyGroup]
+
+    let store: TerminalWorkspaceStore
+
+    init(store: TerminalWorkspaceStore) {
+        self.store = store
+        _groups = State(initialValue: store.terminalPreferences.hotkeyGroups)
+    }
+
+    var body: some View {
+        List {
+            Section {
+                TerminalHotkeyPreview(groups: groups)
+                    .frame(minHeight: 44)
+            } footer: {
+                Text("The preview matches the left-to-right order above the iOS keyboard.")
+            }
+
+            Section("Four-Key Groups") {
+                ForEach(groups) { group in
+                    hotkeyGroupRow(group)
+                        .deleteDisabled(groups.count == 1)
+                }
+                .onMove(perform: moveGroups)
+                .onDelete(perform: deleteGroups)
+            }
+        }
+        .navigationTitle("Customize Keyboard")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Menu("Add Group", systemImage: "plus") {
+                    Button("Shell Symbols") { append(.shell) }
+                    Button("Control Keys") { append(.controls) }
+                    Button("Arrow Keys") { append(.arrows) }
+                }
+            }
+            ToolbarItem(placement: .topBarTrailing) {
+                EditButton()
+            }
+        }
+    }
+
+    private func hotkeyGroupRow(_ group: TerminalHotkeyGroup) -> some View {
+        HStack(spacing: 8) {
+            ForEach(Array(group.keys.enumerated()), id: \.offset) { index, key in
+                Menu {
+                    ForEach(TerminalHotkey.allCases) { replacement in
+                        Button {
+                            replaceKey(in: group.id, at: index, with: replacement)
+                        } label: {
+                            if replacement == key {
+                                Label(replacement.accessibilityLabel, systemImage: "checkmark")
+                            } else {
+                                Text(replacement.accessibilityLabel)
+                            }
+                        }
+                    }
+                } label: {
+                    Text(key.shortLabel)
+                        .font(.system(size: 13, weight: .semibold, design: .rounded))
+                        .foregroundStyle(.primary)
+                        .frame(maxWidth: .infinity, minHeight: 44)
+                        .background(.tertiary, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                }
+                .accessibilityLabel("Key \(index + 1), \(key.accessibilityLabel)")
+            }
+        }
+        .padding(.vertical, 4)
+    }
+
+    private func replaceKey(in groupID: UUID, at keyIndex: Int, with key: TerminalHotkey) {
+        guard let groupIndex = groups.firstIndex(where: { $0.id == groupID }),
+              groups[groupIndex].keys.indices.contains(keyIndex) else { return }
+        groups[groupIndex].keys[keyIndex] = key
+        persist()
+    }
+
+    private func append(_ preset: TerminalHotkeyGroup) {
+        groups.append(TerminalHotkeyGroup(keys: preset.keys))
+        persist()
+    }
+
+    private func moveGroups(from source: IndexSet, to destination: Int) {
+        groups.move(fromOffsets: source, toOffset: destination)
+        persist()
+    }
+
+    private func deleteGroups(at offsets: IndexSet) {
+        guard groups.count - offsets.count >= 1 else { return }
+        groups.remove(atOffsets: offsets)
+        persist()
+    }
+
+    private func persist() {
+        var preferences = store.terminalPreferences
+        preferences.hotkeyGroups = groups
+        store.updateTerminalPreferences(preferences)
     }
 }

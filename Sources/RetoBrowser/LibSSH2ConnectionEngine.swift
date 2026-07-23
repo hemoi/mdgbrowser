@@ -393,8 +393,8 @@ final class LibSSH2ConnectionEngine: SSHConnectionEngineProtocol, @unchecked Sen
 
         guard libssh2_channel_request_pty_ex(
             openedChannel,
-            "xterm-256color",
-            14,
+            profile.resolvedTerminalType,
+            UInt32(profile.resolvedTerminalType.utf8.count),
             nil,
             0,
             100,
@@ -407,6 +407,7 @@ final class LibSSH2ConnectionEngine: SSHConnectionEngineProtocol, @unchecked Sen
 
         LibSSH2Primitives.setEnvironment("LANG", value: "en_US.UTF-8", channel: openedChannel)
         LibSSH2Primitives.setEnvironment("LC_CTYPE", value: "en_US.UTF-8", channel: openedChannel)
+        LibSSH2Primitives.setEnvironment("COLORTERM", value: "truecolor", channel: openedChannel)
         guard libssh2_channel_process_startup(openedChannel, "shell", 5, nil, 0) == 0 else {
             throw LibSSH2ConnectionError.channelFailed
         }

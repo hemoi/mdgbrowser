@@ -60,6 +60,10 @@
     <array>
         <string>audio</string>
     </array>
+    <key>UIAppFonts</key>
+    <array>
+        <string>D2Coding-Ver1.3.2-20180524.ttf</string>
+    </array>
     <key>UILaunchScreen</key>
     <dict>
         <key>UIColorName</key>

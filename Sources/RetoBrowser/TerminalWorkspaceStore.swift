@@ -19,16 +19,37 @@ final class RetoTerminalView: TerminalView, @preconcurrency TerminalViewDelegate
     override init(frame: CGRect) {
         super.init(frame: frame)
         terminalDelegate = self
-        font = .monospacedSystemFont(ofSize: 14, weight: .regular)
-        nativeBackgroundColor = UIColor(red: 0.035, green: 0.043, blue: 0.055, alpha: 1)
-        nativeForegroundColor = UIColor(red: 0.90, green: 0.93, blue: 0.96, alpha: 1)
         optionAsMetaKey = false
         allowMouseReporting = true
         accessibilityIdentifier = "terminal.emulator"
+        apply(TerminalPreferences())
     }
 
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
+    }
+
+    func apply(_ preferences: TerminalPreferences) {
+        let size = CGFloat(preferences.fontSize)
+        font = preferences.font.font(size: size)
+        nativeBackgroundColor = preferences.theme.backgroundColor
+        nativeForegroundColor = preferences.theme.foregroundColor
+        caretColor = preferences.theme.cursorColor
+        selectedTextBackgroundColor = preferences.theme.cursorColor.withAlphaComponent(0.35)
+        installColors(preferences.theme.swiftTermPalette)
+
+        if let accessory = inputAccessoryView as? RetoTerminalAccessoryView {
+            accessory.configure(groups: preferences.hotkeyGroups)
+        } else {
+            inputAccessoryView = RetoTerminalAccessoryView(
+                terminalView: self,
+                groups: preferences.hotkeyGroups
+            )
+        }
+        if isFirstResponder {
+            reloadInputViews()
+        }
+        setNeedsDisplay()
     }
 
     func sizeChanged(source: TerminalView, newCols: Int, newRows: Int) {
@@ -95,6 +116,7 @@ final class TerminalSession: Identifiable {
         id: UUID = UUID(),
         profile: SSHProfile,
         tmuxAttach: TmuxAttachIntent? = nil,
+        preferences: TerminalPreferences = TerminalPreferences(),
         approveHostKey: @escaping HostKeyApproval
     ) {
         self.id = id
@@ -102,6 +124,7 @@ final class TerminalSession: Identifiable {
         self.tmuxAttach = tmuxAttach
         self.approveHostKey = approveHostKey
         terminalView = RetoTerminalView(frame: .zero)
+        terminalView.apply(preferences)
 
         terminalView.onInput = { [weak self] bytes in
             self?.send(bytes)
@@ -218,6 +241,10 @@ final class TerminalSession: Identifiable {
         _ = terminalView.resignFirstResponder()
     }
 
+    func apply(_ preferences: TerminalPreferences) {
+        terminalView.apply(preferences)
+    }
+
     /// Feeds a special key (Esc, Ctrl+C, arrows, …) into the remote shell,
     /// used by the pet quick actions.
     func sendKeystroke(_ keystroke: TerminalKeystroke) {
@@ -321,6 +348,7 @@ final class TerminalWorkspaceStore {
     static let agentPollInterval: Duration = .seconds(30)
 
     var profiles: [SSHProfile]
+    var terminalPreferences: TerminalPreferences
     var tabs: [TerminalSession] = []
     var selectedTabID: UUID?
     var launcherEnabled: Bool
@@ -391,6 +419,7 @@ final class TerminalWorkspaceStore {
         pendingHostTrust = nil
         storageErrorMessage = nil
         launcherEnabled = defaults.bool(forKey: Self.launcherStorageKey)
+        terminalPreferences = TerminalPreferences.load(from: defaults)
 
         do {
             profiles = try vault.loadProfiles()
@@ -481,7 +510,8 @@ final class TerminalWorkspaceStore {
         let session = TerminalSession(
             id: sessionID,
             profile: profile,
-            tmuxAttach: tmuxAttach
+            tmuxAttach: tmuxAttach,
+            preferences: terminalPreferences
         ) { [weak self] fingerprint, expected in
             guard let self else { return false }
             return await self.requestHostTrust(
@@ -494,6 +524,17 @@ final class TerminalWorkspaceStore {
         tabs.append(session)
         selectedTabID = session.id
         startAgentEventMonitorIfNeeded()
+    }
+
+    func updateTerminalPreferences(_ preferences: TerminalPreferences) {
+        terminalPreferences = TerminalPreferences(
+            font: preferences.font,
+            fontSize: preferences.fontSize,
+            theme: preferences.theme,
+            hotkeyGroups: preferences.hotkeyGroups
+        )
+        terminalPreferences.save(to: defaults)
+        tabs.forEach { $0.apply(terminalPreferences) }
     }
 
     func selectTab(_ tabID: UUID) {

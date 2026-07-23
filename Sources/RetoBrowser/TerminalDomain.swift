@@ -14,6 +14,37 @@ enum SSHAuthenticationKind: String, Codable, CaseIterable, Identifiable, Sendabl
     }
 }
 
+enum TerminalEmulation: String, Codable, CaseIterable, Identifiable, Sendable {
+    case automatic
+    case xterm256Color
+    case xterm
+    case screen256Color
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .automatic: "Automatic"
+        case .xterm256Color: "xterm-256color"
+        case .xterm: "xterm"
+        case .screen256Color: "screen-256color"
+        }
+    }
+
+    func resolvedTerm(usesTmux _: Bool) -> String {
+        switch self {
+        case .automatic:
+            "xterm-256color"
+        case .xterm256Color:
+            "xterm-256color"
+        case .xterm:
+            "xterm"
+        case .screen256Color:
+            "screen-256color"
+        }
+    }
+}
+
 struct SSHProfile: Codable, Equatable, Hashable, Identifiable, Sendable {
     static let allowedTmuxSessionCharacters = CharacterSet.alphanumerics
         .union(CharacterSet(charactersIn: "_-."))
@@ -27,6 +58,7 @@ struct SSHProfile: Codable, Equatable, Hashable, Identifiable, Sendable {
     var authenticationKind: SSHAuthenticationKind
     var privateKey: String
     var privateKeyPassphrase: String
+    var terminalEmulation: TerminalEmulation
     var usesTmux: Bool
     var tmuxSession: String
     var hostKeyFingerprint: String?
@@ -49,6 +81,7 @@ struct SSHProfile: Codable, Equatable, Hashable, Identifiable, Sendable {
         authenticationKind: SSHAuthenticationKind = .password,
         privateKey: String = "",
         privateKeyPassphrase: String = "",
+        terminalEmulation: TerminalEmulation = .automatic,
         usesTmux: Bool = false,
         tmuxSession: String = "main",
         hostKeyFingerprint: String? = nil,
@@ -64,6 +97,7 @@ struct SSHProfile: Codable, Equatable, Hashable, Identifiable, Sendable {
         self.authenticationKind = authenticationKind
         self.privateKey = privateKey
         self.privateKeyPassphrase = privateKeyPassphrase
+        self.terminalEmulation = terminalEmulation
         self.usesTmux = usesTmux
         self.tmuxSession = tmuxSession
         self.hostKeyFingerprint = hostKeyFingerprint
@@ -86,6 +120,10 @@ struct SSHProfile: Codable, Equatable, Hashable, Identifiable, Sendable {
         let displayHost = host.contains(":") && !host.hasPrefix("[") ? "[\(host)]" : host
         let authority = username.isEmpty ? displayHost : "\(username)@\(displayHost)"
         return port == 22 ? authority : "\(authority):\(port)"
+    }
+
+    var resolvedTerminalType: String {
+        terminalEmulation.resolvedTerm(usesTmux: usesTmux)
     }
 
     var normalized: SSHProfile {
@@ -130,7 +168,7 @@ struct SSHProfile: Codable, Equatable, Hashable, Identifiable, Sendable {
 
     private enum CodingKeys: String, CodingKey {
         case id, name, host, port, username, password, authenticationKind
-        case privateKey, privateKeyPassphrase, usesTmux, tmuxSession, hostKeyFingerprint
+        case privateKey, privateKeyPassphrase, terminalEmulation, usesTmux, tmuxSession, hostKeyFingerprint
         case groupID, workspaceID
     }
 
@@ -145,6 +183,7 @@ struct SSHProfile: Codable, Equatable, Hashable, Identifiable, Sendable {
         authenticationKind = try values.decodeIfPresent(SSHAuthenticationKind.self, forKey: .authenticationKind) ?? .password
         privateKey = try values.decodeIfPresent(String.self, forKey: .privateKey) ?? ""
         privateKeyPassphrase = try values.decodeIfPresent(String.self, forKey: .privateKeyPassphrase) ?? ""
+        terminalEmulation = try values.decodeIfPresent(TerminalEmulation.self, forKey: .terminalEmulation) ?? .automatic
         usesTmux = try values.decodeIfPresent(Bool.self, forKey: .usesTmux) ?? false
         tmuxSession = try values.decodeIfPresent(String.self, forKey: .tmuxSession) ?? "main"
         hostKeyFingerprint = try values.decodeIfPresent(String.self, forKey: .hostKeyFingerprint)
@@ -195,6 +234,7 @@ enum TerminalSheetDestination: Identifiable, Equatable {
     case profiles
     case profileEditor(SSHProfile)
     case tmuxSessions
+    case settings
 
     var id: String {
         switch self {
@@ -204,6 +244,8 @@ enum TerminalSheetDestination: Identifiable, Equatable {
             "profile-editor-\(profile.id.uuidString)"
         case .tmuxSessions:
             "tmux-sessions"
+        case .settings:
+            "settings"
         }
     }
 }

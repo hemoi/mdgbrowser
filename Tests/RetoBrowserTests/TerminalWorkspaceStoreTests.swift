@@ -12,6 +12,44 @@ private final class InMemorySSHProfileVault: SSHProfileVault {
 
 @MainActor
 final class TerminalWorkspaceStoreTests: XCTestCase {
+    func testTerminalPreferencesPersistAndLoadInGroupOrder() {
+        let defaults = makeDefaults()
+        let store = TerminalWorkspaceStore(vault: InMemorySSHProfileVault(), defaults: defaults)
+        var preferences = store.terminalPreferences
+        preferences.font = .systemMonospaced
+        preferences.fontSize = 19
+        preferences.theme = .solarizedDark
+        preferences.hotkeyGroups = [.arrows, .command]
+
+        store.updateTerminalPreferences(preferences)
+
+        let restored = TerminalWorkspaceStore(vault: InMemorySSHProfileVault(), defaults: defaults)
+        XCTAssertEqual(restored.terminalPreferences.font, .systemMonospaced)
+        XCTAssertEqual(restored.terminalPreferences.fontSize, 19)
+        XCTAssertEqual(restored.terminalPreferences.theme, .solarizedDark)
+        XCTAssertEqual(restored.terminalPreferences.hotkeyGroups.map(\.keys), [
+            TerminalHotkeyGroup.arrows.keys,
+            TerminalHotkeyGroup.command.keys
+        ])
+    }
+
+    func testTerminalPreferencesClampFontSizeAndKeepOneGroup() {
+        let preferences = TerminalPreferences(fontSize: 90, hotkeyGroups: [])
+
+        XCTAssertEqual(preferences.fontSize, 28)
+        XCTAssertEqual(preferences.hotkeyGroups.count, 1)
+        XCTAssertEqual(preferences.hotkeyGroups[0].keys.count, 4)
+    }
+
+    func testAutomaticTerminalEmulationFollowsTmux() {
+        XCTAssertEqual(TerminalEmulation.automatic.resolvedTerm(usesTmux: false), "xterm-256color")
+        XCTAssertEqual(TerminalEmulation.automatic.resolvedTerm(usesTmux: true), "xterm-256color")
+    }
+
+    func testBundledD2CodingFontIsAvailableToTerminalRenderer() {
+        XCTAssertEqual(TerminalFontChoice.d2Coding.font(size: 14).familyName, "D2Coding")
+    }
+
     func testMinimizedSurfaceStaysPresentedAndToggleRestoresIt() {
         let (store, _) = makeStore()
         store.presentTerminal()

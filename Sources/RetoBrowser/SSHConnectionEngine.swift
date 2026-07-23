@@ -154,7 +154,7 @@ final class SSHConnectionEngine: SSHConnectionEngineProtocol, @unchecked Sendabl
 
         let request = SSHChannelRequestEvent.PseudoTerminalRequest(
             wantReply: true,
-            term: "xterm-256color",
+            term: profile.resolvedTerminalType,
             terminalCharacterWidth: 100,
             terminalRowHeight: 30,
             terminalPixelWidth: 0,
@@ -171,6 +171,11 @@ final class SSHConnectionEngine: SSHConnectionEngineProtocol, @unchecked Sendabl
                 wantReply: false,
                 name: "LC_CTYPE",
                 value: "en_US.UTF-8"
+            ),
+            SSHChannelRequestEvent.EnvironmentRequest(
+                wantReply: false,
+                name: "COLORTERM",
+                value: "truecolor"
             )
         ]
 
