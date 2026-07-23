@@ -3,7 +3,7 @@
 	archiveVersion = 1;
 	classes = {
 	};
-	objectVersion = 46;
+	objectVersion = 54;
 	objects = {
 
 /* Begin PBXBuildFile section */
@@ -150,10 +150,10 @@
 
 /* Begin PBXFileReference section */
 		02C05B4A0E14BF888F07F587 /* BrowserView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = BrowserView.swift; sourceTree = "<group>"; };
-		0EB5E57BB8D552E8F99586B1 /* THIRD_PARTY_NOTICES.md */ = {isa = PBXFileReference; includeInIndex = 1; path = THIRD_PARTY_NOTICES.md; sourceTree = "<group>"; };
+		0EB5E57BB8D552E8F99586B1 /* THIRD_PARTY_NOTICES.md */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = net.daringfireball.markdown; path = THIRD_PARTY_NOTICES.md; sourceTree = "<group>"; };
 		0EFBC07F56A3D4717097B1DB /* UnicodeWidthData.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = UnicodeWidthData.swift; sourceTree = "<group>"; };
 		0FA3CC164637A25745C57AD7 /* TmuxDiscoveryTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = TmuxDiscoveryTests.swift; sourceTree = "<group>"; };
-		0FDCFFCC2AC50A4E2B78A6E6 /* libssh2-COPYING */ = {isa = PBXFileReference; includeInIndex = 1; name = "libssh2-COPYING"; path = "licenses/libssh2-COPYING"; sourceTree = "<group>"; };
+		0FDCFFCC2AC50A4E2B78A6E6 /* libssh2-COPYING */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text; name = "libssh2-COPYING"; path = "licenses/libssh2-COPYING"; sourceTree = "<group>"; };
 		147203FB2788D8170DDC8708 /* BrowserSession.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = BrowserSession.swift; sourceTree = "<group>"; };
 		16F8B7DA566FC7DD5E7FF012 /* ExtensionsTerminal.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ExtensionsTerminal.swift; sourceTree = "<group>"; };
 		18C6450CAAE4AE6E66F83F0C /* BrowserURL.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = BrowserURL.swift; sourceTree = "<group>"; };
@@ -162,7 +162,7 @@
 		215175687C0C2E908A576CDD /* SSHCommandRunner.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = SSHCommandRunner.swift; sourceTree = "<group>"; };
 		22A622C511D98FCBD7443F38 /* iOSExtensions.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = iOSExtensions.swift; path = iOS/iOSExtensions.swift; sourceTree = "<group>"; };
 		2309423B94E7C5BB22B3B9AD /* BrowserURLTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = BrowserURLTests.swift; sourceTree = "<group>"; };
-		2452F97F88FD15E4F20E5DC4 /* openssl-LICENSE.txt */ = {isa = PBXFileReference; includeInIndex = 1; name = "openssl-LICENSE.txt"; path = "licenses/openssl-LICENSE.txt"; sourceTree = "<group>"; };
+		2452F97F88FD15E4F20E5DC4 /* openssl-LICENSE.txt */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text; name = "openssl-LICENSE.txt"; path = "licenses/openssl-LICENSE.txt"; sourceTree = "<group>"; };
 		2AAB2C380FEB1E6DEEFA28E0 /* BufferSet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = BufferSet.swift; sourceTree = "<group>"; };
 		2B2399800AEADF600564EA7F /* Assets.xcassets */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		2B6643B730C4952B1CE03459 /* KittyGraphics.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = KittyGraphics.swift; sourceTree = "<group>"; };
@@ -308,7 +308,6 @@
 			children = (
 				CE96A2E8CB8F96CD7DA3C72D /* RetoBrowser */,
 			);
-			name = Sources;
 			path = Sources;
 			sourceTree = "<group>";
 		};
@@ -330,7 +329,6 @@
 				0FA3CC164637A25745C57AD7 /* TmuxDiscoveryTests.swift */,
 				31227480FAA8C9D5742D8C91 /* WorkspaceBrowserStoreTests.swift */,
 			);
-			name = RetoBrowserTests;
 			path = RetoBrowserTests;
 			sourceTree = "<group>";
 		};
@@ -341,7 +339,6 @@
 				76AAB5BA72C4109EA249C845 /* ContentBlocker */,
 				2B2399800AEADF600564EA7F /* Assets.xcassets */,
 			);
-			name = Resources;
 			path = Resources;
 			sourceTree = "<group>";
 		};
@@ -350,7 +347,6 @@
 			children = (
 				7A07D16DC9CC59A094457B30 /* CSSH */,
 			);
-			name = Vendor;
 			path = Vendor;
 			sourceTree = "<group>";
 		};
@@ -372,7 +368,6 @@
 				0FDCFFCC2AC50A4E2B78A6E6 /* libssh2-COPYING */,
 				2452F97F88FD15E4F20E5DC4 /* openssl-LICENSE.txt */,
 			);
-			name = CSSH;
 			path = CSSH;
 			sourceTree = "<group>";
 		};
@@ -482,7 +477,6 @@
 				D9D3A41FA65D25FB4FCA1212 /* WorkspaceBrowserStore.swift */,
 				54AC9820475A8606F77F278C /* WorkspaceCanvas.swift */,
 			);
-			name = RetoBrowser;
 			path = RetoBrowser;
 			sourceTree = "<group>";
 		};
@@ -499,7 +493,6 @@
 			children = (
 				9CB4C30B857193BD7FA62607 /* SwiftTerm */,
 			);
-			name = Vendor;
 			path = Vendor;
 			sourceTree = "<group>";
 		};
@@ -508,7 +501,6 @@
 			children = (
 				4886AD747D2E48656271D313 /* RetoBrowserTests */,
 			);
-			name = Tests;
 			path = Tests;
 			sourceTree = "<group>";
 		};
@@ -623,13 +615,11 @@
 				Base,
 			);
 			mainGroup = F9114FF2309AD2EE14E42B5E;
-			minimizedProjectReferenceProxies = 0;
 			packageReferences = (
 				DA622D74087C6B06ED4C5F57 /* XCRemoteSwiftPackageReference "Citadel" */,
 				3B6B0E1D8897868BBAC0692B /* XCRemoteSwiftPackageReference "swift-nio-ssh" */,
 				2580CF28E79F1A7773A1391E /* XCRemoteSwiftPackageReference "swift-nio" */,
 			);
-			preferredProjectObjectVersion = 77;
 			productRefGroup = 778F84D8E1BFB1FB60905175 /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
@@ -977,7 +967,11 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				INSTALL_PATH = "$(LOCAL_LIBRARY_DIR)/Frameworks";
 				IPHONEOS_DEPLOYMENT_TARGET = 14.0;
-				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks @loader_path/Frameworks";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
 				MACH_O_TYPE = staticlib;
 				PRODUCT_BUNDLE_IDENTIFIER = dev.modot.SwiftTerm;
 				PRODUCT_NAME = "$(TARGET_NAME:c99extidentifier)";
@@ -999,15 +993,24 @@
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CLANG_ENABLE_OBJC_WEAK = NO;
+				"CODE_SIGN_IDENTITY[sdk=iphoneos*]" = "iPhone Distribution";
+				CODE_SIGN_STYLE = Manual;
 				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = "";
+				"DEVELOPMENT_TEAM[sdk=iphoneos*]" = Q3N5A977S4;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Resources/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
-				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = dev.modot.RetoBrowser;
 				PRODUCT_NAME = "$(TARGET_NAME)";
+				PROVISIONING_PROFILE_SPECIFIER = "";
+				"PROVISIONING_PROFILE_SPECIFIER[sdk=iphoneos*]" = "Reto Browser App Store";
 				SDKROOT = iphoneos;
 				SWIFT_STRICT_CONCURRENCY = complete;
 				SWIFT_VERSION = 6.0;
@@ -1028,7 +1031,11 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				INSTALL_PATH = "$(LOCAL_LIBRARY_DIR)/Frameworks";
 				IPHONEOS_DEPLOYMENT_TARGET = 14.0;
-				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks @loader_path/Frameworks";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
 				MACH_O_TYPE = staticlib;
 				PRODUCT_BUNDLE_IDENTIFIER = dev.modot.SwiftTerm;
 				PRODUCT_NAME = "$(TARGET_NAME:c99extidentifier)";
@@ -1052,11 +1059,15 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CLANG_ENABLE_OBJC_WEAK = NO;
 				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = Q3N5A977S4;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Resources/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
-				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = dev.modot.RetoBrowser;
 				PRODUCT_NAME = "$(TARGET_NAME)";
