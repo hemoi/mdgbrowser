@@ -24,16 +24,13 @@ jobs:
       - name: Check out source
         uses: actions/checkout@v4
 
-      - name: Select Xcode 26.4
-        run: sudo xcode-select -s /Applications/Xcode_26.4.app/Contents/Developer
-
       - name: Run iOS simulator tests
         run: |
           set -o pipefail
           xcodebuild test \
             -project RetoBrowser.xcodeproj \
             -scheme RetoBrowser \
-            -destination 'platform=iOS Simulator,name=iPhone 17 Pro' \
+            -destination 'platform=iOS Simulator' \
             -resultBundlePath RetoBrowserTests.xcresult \
             | tee xcodebuild.log
 
