@@ -248,13 +248,15 @@ struct IslandChrome: View {
                 .padding(.horizontal, 2)
                 .padding(.bottom, 8)
         }
-        .background(
-            IslandColors.expandedSurface,
-            in: RoundedRectangle(cornerRadius: GlassMetrics.surfaceCornerRadius, style: .continuous)
-        )
+        .background {
+            RoundedRectangle(cornerRadius: GlassMetrics.surfaceCornerRadius, style: .continuous)
+                .fill(IslandColors.expandedSurface)
+                .padding(.top, GlassMetrics.surfaceTopInset)
+        }
         .overlay {
             RoundedRectangle(cornerRadius: GlassMetrics.surfaceCornerRadius, style: .continuous)
                 .stroke(IslandColors.onSurface.opacity(0.07), lineWidth: GlassMetrics.hairline)
+                .padding(.top, GlassMetrics.surfaceTopInset)
         }
         .padding(.horizontal, 6)
         .accessibilityElement(children: .contain)
@@ -314,13 +316,15 @@ struct IslandChrome: View {
         }
         .padding(.horizontal, 8)
         .padding(.bottom, 10)
-        .background(
-            IslandColors.expandedSurface,
-            in: RoundedRectangle(cornerRadius: GlassMetrics.surfaceCornerRadius, style: .continuous)
-        )
+        .background {
+            RoundedRectangle(cornerRadius: GlassMetrics.surfaceCornerRadius, style: .continuous)
+                .fill(IslandColors.expandedSurface)
+                .padding(.top, GlassMetrics.surfaceTopInset)
+        }
         .overlay {
             RoundedRectangle(cornerRadius: GlassMetrics.surfaceCornerRadius, style: .continuous)
                 .stroke(IslandColors.onSurface.opacity(0.07), lineWidth: GlassMetrics.hairline)
+                .padding(.top, GlassMetrics.surfaceTopInset)
         }
         .padding(.horizontal, 6)
         .contentShape(Rectangle())

@@ -7,6 +7,9 @@ import UIKit
 enum GlassMetrics {
     /// Corner radius of the expanded surface panel.
     static let surfaceCornerRadius: CGFloat = 30
+    /// Keeps the expanded shell's top edge visible below the screen edge
+    /// while the inline controls remain aligned with the hardware island.
+    static let surfaceTopInset: CGFloat = 8
     /// Corner radius of individual controls inside the surface (the address
     /// field, icon buttons).
     static let controlCornerRadius: CGFloat = 20
