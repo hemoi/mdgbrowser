@@ -925,6 +925,15 @@ final class WorkspaceBrowserStore {
         persist()
     }
 
+    /// The expanded island is transient chrome. A short downward page scroll
+    /// means the reader is continuing into the page, so clear it without
+    /// consuming or altering the page's own gesture.
+    func collapseIslandForPageScroll() {
+        guard islandExpanded else { return }
+        RetoHaptics.islandTransition(expanded: false)
+        islandExpanded = false
+    }
+
     func resetForTesting() {
         defaults.removeObject(forKey: storageKey)
         privateDataStores.removeAll()
@@ -963,6 +972,9 @@ final class WorkspaceBrowserStore {
             },
             closeHandler: { [weak self] in
                 self?.closeTab(record.id)
+            },
+            pageScrollDownHandler: { [weak self] in
+                self?.collapseIslandForPageScroll()
             }
         )
     }

@@ -9,6 +9,35 @@ enum BrowserNavigationDisposition: Equatable {
     case block(reason: String)
 }
 
+/// Recognizes the small, intentional content scroll that dismisses transient
+/// phone chrome. Keeping the decision separate from the UIKit recognizer
+/// makes the direction threshold explicit and easy to test.
+enum IslandCollapseScrollGesture {
+    /// Let normal reading advance enough that dismissing the chrome is
+    /// deliberate. A quick flick can still commit naturally by projecting
+    /// the velocity into the gesture's resting position.
+    static let minimumObservedDistance: CGFloat = 16
+    static let collapseDistance: CGFloat = 44
+    static let decelerationRate: CGFloat = 0.99
+
+    static func shouldCollapse(for translation: CGPoint, velocity: CGPoint) -> Bool {
+        let upwardFingerTravel = -translation.y
+        guard upwardFingerTravel >= minimumObservedDistance,
+              upwardFingerTravel > abs(translation.x) else { return false }
+
+        let projectedTravel = upwardFingerTravel + project(upwardVelocity: -velocity.y)
+        return projectedTravel >= collapseDistance
+    }
+
+    /// Matches the exponential deceleration projection used for UIKit-style
+    /// scroll interactions, so a flick and a longer drag feel like one
+    /// continuous gesture rather than two unrelated thresholds.
+    private static func project(upwardVelocity: CGFloat) -> CGFloat {
+        guard upwardVelocity > 0 else { return 0 }
+        return (upwardVelocity / 1000) * decelerationRate / (1 - decelerationRate)
+    }
+}
+
 enum BrowserNavigationSecurityPolicy {
     static let webViewSchemes: Set<String> = [
         "http", "https", "file", "about", "data", "blob", "reto-start"
@@ -94,11 +123,14 @@ final class BrowserSession: NSObject, WKNavigationDelegate, WKUIDelegate {
     @ObservationIgnored private let isPrivateWorkspace: Bool
     @ObservationIgnored private let newWindowHandler: (URL?, WKWebViewConfiguration) -> WKWebView?
     @ObservationIgnored private let closeHandler: () -> Void
+    @ObservationIgnored private let pageScrollDownHandler: () -> Void
+    @ObservationIgnored private let pullToRefreshControl: UIRefreshControl
     @ObservationIgnored private var blockerInstalled = false
     @ObservationIgnored private var autoScrollTask: Task<Void, Never>?
     @ObservationIgnored private var pageColorObservations: [NSKeyValueObservation] = []
     @ObservationIgnored private var developerInstrumentationEnabled = false
     @ObservationIgnored private var recentProcessTerminations: [Date] = []
+    @ObservationIgnored private var hasSignaledPageScrollDown = false
 
     init(
         workspaceID: UUID,
@@ -112,7 +144,8 @@ final class BrowserSession: NSObject, WKNavigationDelegate, WKUIDelegate {
         webViewConfiguration: WKWebViewConfiguration? = nil,
         startsLoaded: Bool = false,
         newWindowHandler: @escaping (URL?, WKWebViewConfiguration) -> WKWebView?,
-        closeHandler: @escaping () -> Void
+        closeHandler: @escaping () -> Void,
+        pageScrollDownHandler: @escaping () -> Void = {}
     ) {
         id = record.id
         self.workspaceID = workspaceID
@@ -123,6 +156,8 @@ final class BrowserSession: NSObject, WKNavigationDelegate, WKUIDelegate {
         self.isPrivateWorkspace = isPrivateWorkspace
         self.newWindowHandler = newWindowHandler
         self.closeHandler = closeHandler
+        self.pageScrollDownHandler = pageScrollDownHandler
+        pullToRefreshControl = UIRefreshControl()
         hasLoaded = startsLoaded
         address = record.urlString == StartPage.url.absoluteString ? "" : record.urlString
 
@@ -158,9 +193,51 @@ final class BrowserSession: NSObject, WKNavigationDelegate, WKUIDelegate {
         webView.navigationDelegate = self
         webView.uiDelegate = self
         webView.allowsBackForwardNavigationGestures = true
+        webView.scrollView.alwaysBounceVertical = true
+        pullToRefreshControl.addTarget(
+            self,
+            action: #selector(refreshFromPull),
+            for: .valueChanged
+        )
+        webView.scrollView.refreshControl = pullToRefreshControl
+        // Observe the web view's existing pan recognizer rather than adding
+        // another one. That keeps page interactions (including selection and
+        // horizontal history gestures) owned by WebKit while letting the
+        // browser react to a small vertical scroll immediately.
+        webView.scrollView.panGestureRecognizer.addTarget(
+            self,
+            action: #selector(handlePagePan)
+        )
         webView.isInspectable = false
         applyVisualSettings(for: initialURL)
         observePageColors()
+    }
+
+    @objc private func handlePagePan(_ recognizer: UIPanGestureRecognizer) {
+        switch recognizer.state {
+        case .began:
+            hasSignaledPageScrollDown = false
+        case .changed:
+            guard !hasSignaledPageScrollDown,
+                  IslandCollapseScrollGesture.shouldCollapse(
+                    for: recognizer.translation(in: recognizer.view),
+                    velocity: recognizer.velocity(in: recognizer.view)
+                  ) else { return }
+            hasSignaledPageScrollDown = true
+            pageScrollDownHandler()
+        case .cancelled, .ended, .failed:
+            hasSignaledPageScrollDown = false
+        default:
+            break
+        }
+    }
+
+    /// `UIRefreshControl` owns the overscroll and progress feedback, giving
+    /// the page the same direct pull-to-refresh behavior users expect from a
+    /// browser. The control remains visible until navigation completes.
+    @objc private func refreshFromPull() {
+        RetoHaptics.refreshTriggered()
+        webView.reload()
     }
 
     /// `themeColor` and `underPageBackgroundColor` change without any
@@ -217,6 +294,7 @@ final class BrowserSession: NSObject, WKNavigationDelegate, WKUIDelegate {
     func stopLoading() {
         webView.stopLoading()
         isLoading = false
+        pullToRefreshControl.endRefreshing()
     }
 
     func toggleAutoScroll() {
@@ -414,6 +492,7 @@ final class BrowserSession: NSObject, WKNavigationDelegate, WKUIDelegate {
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation?) {
         estimatedProgress = 1
         isLoading = false
+        pullToRefreshControl.endRefreshing()
         refreshPageState(from: webView)
     }
 
@@ -431,6 +510,7 @@ final class BrowserSession: NSObject, WKNavigationDelegate, WKUIDelegate {
         recentProcessTerminations.append(.now)
         guard recentProcessTerminations.count <= 2 else {
             isLoading = false
+            pullToRefreshControl.endRefreshing()
             errorMessage = "This page’s web process stopped repeatedly. Reload it manually when you’re ready."
             return
         }
@@ -669,6 +749,7 @@ final class BrowserSession: NSObject, WKNavigationDelegate, WKUIDelegate {
 
     private func handleFailure(_ error: any Error, webView: WKWebView) {
         isLoading = false
+        pullToRefreshControl.endRefreshing()
         refreshPageState(from: webView)
         let nsError = error as NSError
         guard nsError.code != NSURLErrorCancelled else { return }

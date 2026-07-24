@@ -30,6 +30,10 @@ enum RetoHaptics {
         UIImpactFeedbackGenerator(style: expanded ? .light : .soft).impactOccurred(intensity: 0.7)
     }
 
+    static func refreshTriggered() {
+        UIImpactFeedbackGenerator(style: .light).impactOccurred(intensity: 0.6)
+    }
+
     static func connectionStarted() {
         UIImpactFeedbackGenerator(style: .soft).impactOccurred(intensity: 0.65)
     }

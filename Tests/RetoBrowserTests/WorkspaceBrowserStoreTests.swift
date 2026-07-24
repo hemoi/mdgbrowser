@@ -19,6 +19,48 @@ final class WorkspaceBrowserStoreTests: XCTestCase {
         )
     }
 
+    func testSmallDownwardPageScrollCollapsesExpandedIsland() {
+        let (store, _) = makeStore()
+        store.islandExpanded = true
+
+        store.collapseIslandForPageScroll()
+
+        XCTAssertFalse(store.islandExpanded)
+    }
+
+    func testIslandCollapseScrollGestureUsesAReadingScrollOrProjectedFlick() {
+        XCTAssertTrue(
+            IslandCollapseScrollGesture.shouldCollapse(
+                for: CGPoint(x: 0, y: -44),
+                velocity: .zero
+            )
+        )
+        XCTAssertFalse(
+            IslandCollapseScrollGesture.shouldCollapse(
+                for: CGPoint(x: 0, y: -43),
+                velocity: .zero
+            )
+        )
+        XCTAssertTrue(
+            IslandCollapseScrollGesture.shouldCollapse(
+                for: CGPoint(x: 0, y: -16),
+                velocity: CGPoint(x: 0, y: -320)
+            )
+        )
+        XCTAssertFalse(
+            IslandCollapseScrollGesture.shouldCollapse(
+                for: CGPoint(x: 44, y: -44),
+                velocity: .zero
+            )
+        )
+        XCTAssertFalse(
+            IslandCollapseScrollGesture.shouldCollapse(
+                for: CGPoint(x: 0, y: 44),
+                velocity: .zero
+            )
+        )
+    }
+
     func testSplitCreatesDistinctPaneTabs() {
         let (store, _) = makeStore()
 
